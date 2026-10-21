@@ -48,9 +48,16 @@ class TripScheduler:
         else:
             self.start_date = date.today()
 
-        # 均衡模式配置：单日推荐 2~3 个景点
-        self.max_spots_per_day = 3
-        self.min_spots_per_day = 1
+        # 节奏档位配置
+        if pace == "relaxed":
+            self.max_spots_per_day = 2
+            self.min_spots_per_day = 1
+        elif pace == "compact":
+            self.max_spots_per_day = 4
+            self.min_spots_per_day = 2
+        else:  # balanced
+            self.max_spots_per_day = 3
+            self.min_spots_per_day = 1
 
     def _pick_best_restaurant(
         self,

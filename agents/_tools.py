@@ -360,6 +360,7 @@ def generate_trip_itinerary(
     departure_name: Annotated[str, "返程出发地点（如「武汉站」「成都东站」「大兴机场」），若用户未说明可留空"] = "",
     departure_location: Annotated[str, "返程出发地坐标 'lng,lat'，若有则终点直通返程枢纽"] = "",
     start_date: Annotated[str, "出行起始日期 'YYYY-MM-DD'，用于自动核验周一闭馆及日历开放状态"] = "",
+    pace: Annotated[str, "游玩节奏：'relaxed'(轻松慢游，每日1~2点) | 'balanced'(均衡标准，每日2~3点) | 'compact'(特种兵打卡，每日3~4点)"] = "balanced",
 ) -> str:
     """调用纯 Python 排程算法，生成不折返、按天切分、带双轨餐饮（正餐+特色小吃/夜市）的完整行程。
 
@@ -420,6 +421,7 @@ def generate_trip_itinerary(
             hotel=hotel,
             departure_point=dep_point,
             start_date=start_date or None,
+            pace=pace,
         )
         plan = scheduler.schedule(spots=spot_objects, restaurants=rest_objects)
 

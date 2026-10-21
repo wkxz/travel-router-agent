@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from pages_agents.engine.models import LocationPoint, Spot, Restaurant
 from pages_agents.engine.scheduler import TripScheduler
+from pages_agents.engine.geo import cluster_spots_spatially
 from pages_agents.chat.index import _load_city_rules_text
 
 
@@ -93,12 +94,38 @@ class TestSchedulerV2(unittest.TestCase):
         self.assertNotIn("snack", categories, "下午严重超时时不应再塞入紧凑下午茶小吃")
 
     def test_city_rules_decoupling(self):
-        """测试城市规则库解耦读取无误"""
+        """测试通用元规则库解耦读取无误"""
         rules_text = _load_city_rules_text()
-        self.assertIn("南京", rules_text)
-        self.assertIn("南京博物院", rules_text)
-        self.assertIn("武汉", rules_text)
-        self.assertIn("西安", rules_text)
+        self.assertIn("通用向导核心元规则库", rules_text)
+        self.assertIn("气候与时令感知法则", rules_text)
+        self.assertIn("体能守恒与审美防疲劳法则", rules_text)
+        self.assertIn("餐饮体验去重", rules_text)
+
+    def test_spatial_clustering(self):
+        """测试纯数学空间层次聚类在无人工规则下能自然成组"""
+        # 东区景点
+        east_spots = [
+            Spot(name="钟山A", lng=118.85, lat=32.06),
+            Spot(name="钟山B", lng=118.86, lat=32.06),
+        ]
+        # 西区景点（相距约 13 公里）
+        west_spots = [
+            Spot(name="河西A", lng=118.72, lat=32.02),
+            Spot(name="河西B", lng=118.73, lat=32.02),
+        ]
+        # 故意打乱顺序传入
+        all_spots = [east_spots[0], west_spots[0], east_spots[1], west_spots[1]]
+        clusters = cluster_spots_spatially(self.hotel, all_spots, num_clusters=2)
+        self.assertEqual(len(clusters), 2)
+        # 每个簇内部应该自然聚合属于同片区的点
+        for cl in clusters:
+            names = [s.name for s in cl]
+            if "钟山A" in names:
+                self.assertIn("钟山B", names)
+                self.assertNotIn("河西A", names)
+            if "河西A" in names:
+                self.assertIn("河西B", names)
+                self.assertNotIn("钟山A", names)
 
 
 if __name__ == "__main__":

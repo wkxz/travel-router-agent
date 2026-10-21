@@ -2,6 +2,7 @@ from datetime import datetime, date, timedelta
 from typing import List, Tuple, Optional
 from .models import LocationPoint, Spot
 from .optimizer import optimize_spots_route
+from .geo import cluster_spots_spatially
 
 # 默认闭馆规则：常见特大博物馆逢周一闭馆
 MONDAY_CLOSED_KEYWORDS = ["博物馆", "博物院", "纪念馆", "美术馆", "科技馆"]
@@ -41,30 +42,14 @@ def split_spots_by_time_and_calendar(
     if not spots:
         return [[] for _ in range(total_days)], [], []
 
-    # 1. 全局 2-opt 消除折返得到顺畅大走势
-    ordered_spots, _ = optimize_spots_route(hotel, spots)
-
     calendar_warnings: List[str] = []
     days_spots: List[List[Spot]] = [[] for _ in range(total_days)]
     unassigned: List[Spot] = []
-
-    # 预先检查每个景点在各天的开放状态
-    # days_open_status: List[List[bool]]，外层天数，内层各 spot
     date_list = [start_date + timedelta(days=d) for d in range(total_days)]
 
-    # 2. 连续分块切分 + 时间预算微调
-    # 计算均摊容量
-    n = len(ordered_spots)
-    base_size = n // total_days
-    remainder = n % total_days
-
-    start_idx = 0
-    raw_chunks: List[List[Spot]] = []
-    for day_idx in range(total_days):
-        chunk_size = base_size + (1 if day_idx < remainder else 0)
-        chunk = ordered_spots[start_idx : start_idx + chunk_size]
-        start_idx += chunk_size
-        raw_chunks.append(chunk)
+    # 1. 纯数学空间层次聚类：按地理距离将 M 个景点聚为 total_days 个紧密簇
+    # 彻底杜绝人工写死路线，全国任意城市景点自然成组
+    raw_chunks = cluster_spots_spatially(hotel, spots, total_days)
 
     # 3. 闭馆防呆交换：如果某天分到的景点在当天闭馆，尝试与非闭馆日同片区的点调换
     for day_idx in range(total_days):

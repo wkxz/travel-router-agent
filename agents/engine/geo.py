@@ -3,9 +3,10 @@
 不依赖外部库（如 geopy/shapely），使用标准 math 模块实现。
 """
 
+from __future__ import annotations
 import math
 import re
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Any
 
 
 def haversine_distance(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
@@ -99,3 +100,80 @@ def is_time_in_range(target_hhmm: str, open_time_str: str) -> Tuple[bool, str]:
                 return True, f"在夜间/跨日营业时间内 ({start_s}-{end_s})"
 
     return False, f"可能未营业（营业时间：{open_time_str}）"
+
+
+def cluster_spots_spatially(
+    hotel: LocationPoint,
+    spots: list,
+    num_clusters: int,
+) -> list:
+    """基于大圆球面距离的轻量级层次空间聚类算法（纯标准库实现）。
+
+    解决痛点：将 M 个景点聚类为 N 天（每天一个空间紧密簇），
+    彻底取代人工硬编码写死「片区路线」，适用于全国任意城市。
+    """
+    if not spots:
+        return [[] for _ in range(num_clusters)]
+    if num_clusters <= 1:
+        return [list(spots)]
+    if len(spots) <= num_clusters:
+        res = [[s] for s in spots]
+        while len(res) < num_clusters:
+            res.append([])
+        return res
+
+    max_cluster_size = math.ceil(len(spots) / num_clusters) + 1
+
+    # 初始化：各景点自成一簇
+    clusters = [[s] for s in spots]
+
+    def _cluster_centroid(cl: list) -> Tuple[float, float]:
+        avg_lng = sum(s.lng for s in cl) / len(cl)
+        avg_lat = sum(s.lat for s in cl) / len(cl)
+        return avg_lng, avg_lat
+
+    def _cluster_distance(c1: list, c2: list) -> float:
+        lng1, lat1 = _cluster_centroid(c1)
+        lng2, lat2 = _cluster_centroid(c2)
+        return haversine_distance(lng1, lat1, lng2, lat2)
+
+    # 层次凝聚合并，直到簇数量缩减至 num_clusters
+    while len(clusters) > num_clusters:
+        best_pair = None
+        best_cost = float("inf")
+        for i in range(len(clusters)):
+            for j in range(i + 1, len(clusters)):
+                combined_size = len(clusters[i]) + len(clusters[j])
+                # 容量平衡惩罚项，避免把所有点聚在一个簇内
+                size_penalty = 5.0 * max(0, combined_size - max_cluster_size)
+                d = _cluster_distance(clusters[i], clusters[j]) + size_penalty
+                if d < best_cost:
+                    best_cost = d
+                    best_pair = (i, j)
+
+        if best_pair is None:
+            break
+        i, j = best_pair
+        clusters[i].extend(clusters[j])
+        clusters.pop(j)
+
+    # 将聚好的簇按距酒店（或前一簇重心）由近及远贪心排序，确保天数动线连贯
+    ordered_clusters = []
+    curr_lng, curr_lat = hotel.lng, hotel.lat
+    while clusters:
+        best_idx = 0
+        best_dist = float("inf")
+        for idx, cl in enumerate(clusters):
+            c_lng, c_lat = _cluster_centroid(cl)
+            d = haversine_distance(curr_lng, curr_lat, c_lng, c_lat)
+            if d < best_dist:
+                best_dist = d
+                best_idx = idx
+        chosen = clusters.pop(best_idx)
+        ordered_clusters.append(chosen)
+        curr_lng, curr_lat = _cluster_centroid(chosen)
+
+    while len(ordered_clusters) < num_clusters:
+        ordered_clusters.append([])
+
+    return ordered_clusters

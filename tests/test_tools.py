@@ -3,9 +3,15 @@ import sys
 import os
 import json
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+if sys.stdout.encoding.lower() != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
-from agents._tools import generate_trip_itinerary
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".edgeone", "agent-python")))
+
+from pages_agents._tools import generate_trip_itinerary
 
 def test_generate_itinerary_tool():
     city = "北京"
@@ -25,7 +31,10 @@ def test_generate_itinerary_tool():
         {"name": "南门涮肉(天坛店)", "lng": 116.4150, "lat": 39.8800, "meal_type": "meal", "rating": 4.7, "cost": 110, "open_time": "11:00-22:00", "cuisine": "老北京铜锅涮肉"},
     ]
 
-    res_str = generate_trip_itinerary(
+    invoker = getattr(generate_trip_itinerary, "on_invoke_tool", None)
+    fn = invoker._get_wrapped_callable() if invoker and hasattr(invoker, "_get_wrapped_callable") else generate_trip_itinerary
+
+    res_str = fn(
         city=city,
         total_days=total_days,
         hotel_name=hotel_name,
