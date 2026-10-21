@@ -42,7 +42,14 @@ class TripScheduler:
         self.min_spots_per_day = 1
 
     def _split_spots_to_days(self, spots: List[Spot]) -> Tuple[List[List[Spot]], List[Spot]]:
-        """将全局优化后的景点序列切分成每天的游玩清单。"""
+        """将全局优化后的景点序列按空间连续性切分成每天的游玩清单。
+
+        优化逻辑：
+        全局路线已由 2-opt 消除折返，按地理位置自然串成顺畅走势。
+        严禁使用轮询取模 (idx % total_days)，必须按连续块（Chunking）切分，
+        确保空间上紧挨着的景点（如鸡鸣寺与玄武湖、音乐台与梧桐大道、夫子庙与老门东）
+        始终分在同一天游玩，绝不被拆散到不同天！
+        """
         total = len(spots)
         if total == 0:
             return [[] for _ in range(self.total_days)], []
@@ -52,22 +59,26 @@ class TripScheduler:
         accepted = spots[:capacity]
         unassigned = spots[capacity:]
 
-        # 平均分配给各天
+        # 连续分块切分 (Contiguous Chunking)
+        n = len(accepted)
         days_spots: List[List[Spot]] = [[] for _ in range(self.total_days)]
-        for idx, spot in enumerate(accepted):
-            day_idx = idx % self.total_days
-            days_spots[day_idx].append(spot)
 
-        # 每天内部再按距离起点微调排序保证单日最优
-        final_days_spots = []
-        for d_spots in days_spots:
-            if d_spots:
-                opt, _ = optimize_spots_route(self.hotel, d_spots)
-                final_days_spots.append(opt)
+        base_size = n // self.total_days
+        remainder = n % self.total_days
+
+        start_idx = 0
+        for day_idx in range(self.total_days):
+            chunk_size = base_size + (1 if day_idx < remainder else 0)
+            chunk = accepted[start_idx : start_idx + chunk_size]
+            start_idx += chunk_size
+            if chunk:
+                # 每天内部以住宿点为起点微调单日最佳顺序
+                opt, _ = optimize_spots_route(self.hotel, chunk)
+                days_spots[day_idx] = opt
             else:
-                final_days_spots.append([])
+                days_spots[day_idx] = []
 
-        return final_days_spots, unassigned
+        return days_spots, unassigned
 
     def _pick_best_restaurant(
         self,
