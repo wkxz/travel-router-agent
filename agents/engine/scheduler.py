@@ -105,13 +105,14 @@ class TripScheduler:
         if not candidates:
             return None
 
-        # 评分机制：距离越近越好，评分越高越好
+        # 评分机制：距离越近越好，评分越高越好。加大距离惩罚权重，防止为了高分跨城折返
         def score(r: Restaurant) -> float:
             dist = haversine_distance(anchor.lng, anchor.lat, r.lng, r.lat)
             is_open, _ = is_time_in_range(target_time, r.open_time)
             open_bonus = 2.0 if is_open else -5.0
-            # rating 权重 1.0, 距离扣分 (每公里扣 0.5 分)
-            return (r.rating or 4.0) - (dist * 0.5) + open_bonus
+            # 距离衰减：强惩罚远距离（每公里扣 2.0 分），超过 5 公里扣 15 分，坚决优先 1.5km 范围内的顺路餐
+            distance_penalty = dist * 2.0 if dist <= 3.0 else (dist * 3.5 + 5.0)
+            return (r.rating or 4.0) * 1.5 - distance_penalty + open_bonus
 
         candidates.sort(key=score, reverse=True)
         chosen = candidates[0]

@@ -276,14 +276,15 @@ def search_scenic_spots(
 @function_tool
 def search_food_and_snacks(
     city: Annotated[str, "城市名，例如「成都」"],
-    keywords: Annotated[str, "美食关键词，例如「火锅」「川菜」「串串」「老字号」「小吃」"],
-    center: Annotated[str, "中心坐标 'lng,lat'，通常以临近景点或酒店为中心搜索周边美食"] = "",
+    keywords: Annotated[str, "美食关键词，例如「南京大牌档」「盐水鸭」「鸭血粉丝」「汤包」「生煎」「特色小吃」"],
+    center: Annotated[str, "中心坐标 'lng,lat'，必须传入临近景点的坐标以检索该景点周边的美食，切忌只传酒店坐标造成来回折返"] = "",
     meal_type: Annotated[str, "餐饮类型：'meal'(正餐) | 'snack'(特色小吃) | 'night_market'(夜市/小吃街)"] = "meal",
 ) -> str:
     """搜索附近的优质正餐、特色地方小吃或夜市。
 
     依据实战经验：分类码 050400 实际是咖啡饮品，因此统一使用 types=050000 结合 keywords
     与 extensions=all 获取真实评分、人均花费与营业时间。
+    请务必传入对应景点或目标时段位置的 center 坐标，实现「景点就近用餐」。
     """
     params: dict = {
         "city": city,
