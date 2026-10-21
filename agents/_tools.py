@@ -357,15 +357,25 @@ def generate_trip_itinerary(
     hotel_location: Annotated[str, "住宿地坐标 'lng,lat'"],
     spots_json: Annotated[str, "由 search_scenic_spots 查出的景点 JSON 列表字符串，含 name, lng, lat, cost, open_time 等"],
     foods_json: Annotated[str, "由 search_food_and_snacks 查出的餐饮候选 JSON 列表字符串，含 name, lng, lat, meal_type, rating, cost, open_time 等"],
+    departure_name: Annotated[str, "返程出发地点（如「武汉站」「成都东站」「大兴机场」），若用户未说明可留空"] = "",
+    departure_location: Annotated[str, "返程出发地坐标 'lng,lat'，若有则终点直通返程枢纽"] = "",
+    start_date: Annotated[str, "出行起始日期 'YYYY-MM-DD'，用于自动核验周一闭馆及日历开放状态"] = "",
 ) -> str:
     """调用纯 Python 排程算法，生成不折返、按天切分、带双轨餐饮（正餐+特色小吃/夜市）的完整行程。
 
     必须在收集完景点的坐标与餐饮候选后调用本工具。
     LLM 不应手写行程表，必须通过本工具生成严谨可行的行程。
+    支持传入 departure_name/departure_location 规划返程日终点无缝接驳；
+    支持传入 start_date 自动检测周一闭馆并调换游玩天数。
     """
     try:
         h_lng, h_lat = _parse_location(hotel_location)
         hotel = LocationPoint(name=hotel_name, lng=h_lng, lat=h_lat)
+
+        dep_point = None
+        if departure_name and departure_location:
+            d_lng, d_lat = _parse_location(departure_location)
+            dep_point = LocationPoint(name=departure_name, lng=d_lng, lat=d_lat)
 
         # 解析 spots
         raw_spots = json.loads(spots_json) if isinstance(spots_json, str) else spots_json
@@ -404,7 +414,13 @@ def generate_trip_itinerary(
                 )
             )
 
-        scheduler = TripScheduler(city=city, total_days=total_days, hotel=hotel)
+        scheduler = TripScheduler(
+            city=city,
+            total_days=total_days,
+            hotel=hotel,
+            departure_point=dep_point,
+            start_date=start_date or None,
+        )
         plan = scheduler.schedule(spots=spot_objects, restaurants=rest_objects)
 
         markdown_result = render_markdown(plan)

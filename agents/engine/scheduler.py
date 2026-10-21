@@ -1,9 +1,8 @@
-"""排程引擎核心：时间轴推进、按天切分、双轨餐饮就近匹配与营业时间校验。
+"""行程日程编排器：融合日历闭馆检测、时间预算装箱、用餐生理抑制与返程点接驳。"""
 
-保证输出的每一天都遵循合理的人类出行作息，绝不在午夜排公园，不在闭馆后排博物馆。
-"""
+from datetime import datetime, date, timedelta
+from typing import List, Optional, Tuple, Dict, Any
 
-from typing import List, Dict, Optional, Tuple
 from .models import (
     LocationPoint,
     Spot,
@@ -15,70 +14,43 @@ from .models import (
 from .geo import (
     haversine_distance,
     estimate_transit,
-    parse_time_to_minutes,
     minutes_to_hhmm,
     is_time_in_range,
 )
 from .optimizer import optimize_spots_route
+from .calendar_pack import split_spots_by_time_and_calendar, is_spot_closed_on_date
 
 
 class TripScheduler:
-    """行程日程编排器"""
+    """工业级旅游行程日程编排器。"""
 
     def __init__(
         self,
         city: str,
         total_days: int,
         hotel: Optional[LocationPoint] = None,
+        departure_point: Optional[LocationPoint] = None,  # 返程终点（如高铁站/机场）
+        start_date: Optional[str] = None,  # 出行起始日期 "YYYY-MM-DD"
         pace: str = "balanced",  # 当前固定为 balanced (均衡)
     ):
         self.city = city
         self.total_days = max(1, total_days)
         self.hotel = hotel or LocationPoint(name=f"{city}市中心住宿点", lng=116.4074, lat=39.9042)
+        self.departure_point = departure_point
         self.pace = pace
+
+        # 起始日期解析（默认当天）
+        if start_date:
+            try:
+                self.start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+            except Exception:
+                self.start_date = date.today()
+        else:
+            self.start_date = date.today()
 
         # 均衡模式配置：单日推荐 2~3 个景点
         self.max_spots_per_day = 3
         self.min_spots_per_day = 1
-
-    def _split_spots_to_days(self, spots: List[Spot]) -> Tuple[List[List[Spot]], List[Spot]]:
-        """将全局优化后的景点序列按空间连续性切分成每天的游玩清单。
-
-        优化逻辑：
-        全局路线已由 2-opt 消除折返，按地理位置自然串成顺畅走势。
-        严禁使用轮询取模 (idx % total_days)，必须按连续块（Chunking）切分，
-        确保空间上紧挨着的景点（如鸡鸣寺与玄武湖、音乐台与梧桐大道、夫子庙与老门东）
-        始终分在同一天游玩，绝不被拆散到不同天！
-        """
-        total = len(spots)
-        if total == 0:
-            return [[] for _ in range(self.total_days)], []
-
-        # 计算合理容量
-        capacity = self.total_days * self.max_spots_per_day
-        accepted = spots[:capacity]
-        unassigned = spots[capacity:]
-
-        # 连续分块切分 (Contiguous Chunking)
-        n = len(accepted)
-        days_spots: List[List[Spot]] = [[] for _ in range(self.total_days)]
-
-        base_size = n // self.total_days
-        remainder = n % self.total_days
-
-        start_idx = 0
-        for day_idx in range(self.total_days):
-            chunk_size = base_size + (1 if day_idx < remainder else 0)
-            chunk = accepted[start_idx : start_idx + chunk_size]
-            start_idx += chunk_size
-            if chunk:
-                # 每天内部以住宿点为起点微调单日最佳顺序
-                opt, _ = optimize_spots_route(self.hotel, chunk)
-                days_spots[day_idx] = opt
-            else:
-                days_spots[day_idx] = []
-
-        return days_spots, unassigned
 
     def _pick_best_restaurant(
         self,
@@ -90,7 +62,7 @@ class TripScheduler:
     ) -> Optional[Restaurant]:
         """就近挑选最合适且营业的餐饮/小吃。
 
-        权重因子：距离近 > 评分高 > 营业状态。
+        权重因子：距离近 > 评分高 > 营业状态。强距离惩罚杜绝跨城折返。
         """
         candidates = [
             r for r in restaurants
@@ -99,18 +71,15 @@ class TripScheduler:
         ]
 
         if not candidates and target_meal_type != "all":
-            # 降级：若特定品类无候选，放宽至所有餐饮
             candidates = [r for r in restaurants if r.name not in used_names]
 
         if not candidates:
             return None
 
-        # 评分机制：距离越近越好，评分越高越好。加大距离惩罚权重，防止为了高分跨城折返
         def score(r: Restaurant) -> float:
             dist = haversine_distance(anchor.lng, anchor.lat, r.lng, r.lat)
             is_open, _ = is_time_in_range(target_time, r.open_time)
             open_bonus = 2.0 if is_open else -5.0
-            # 距离衰减：强惩罚远距离（每公里扣 2.0 分），超过 5 公里扣 15 分，坚决优先 1.5km 范围内的顺路餐
             distance_penalty = dist * 2.0 if dist <= 3.0 else (dist * 3.5 + 5.0)
             return (r.rating or 4.0) * 1.5 - distance_penalty + open_bonus
 
@@ -125,17 +94,23 @@ class TripScheduler:
         restaurants: List[Restaurant],
     ) -> FullTripPlan:
         """运行完整排程流程，产出结构化行程。"""
-        # 1. 全局路线优化（消除折返）
-        optimized_spots, _ = optimize_spots_route(self.hotel, spots)
-
-        # 2. 按天切分
-        days_spots, unassigned = self._split_spots_to_days(optimized_spots)
+        # 1. 连续分块切分 + 动态闭馆检测与避让调换
+        days_spots, unassigned, calendar_warnings = split_spots_by_time_and_calendar(
+            hotel=self.hotel,
+            spots=spots,
+            total_days=self.total_days,
+            start_date=self.start_date,
+            max_spots_per_day=self.max_spots_per_day,
+        )
 
         used_restaurant_names = set()
         day_plans: List[DayItinerary] = []
 
         for day_idx in range(self.total_days):
             day_num = day_idx + 1
+            curr_date = self.start_date + timedelta(days=day_idx)
+            is_last_day = (day_num == self.total_days)
+
             curr_spots = days_spots[day_idx]
             current_time_min = 9 * 60  # 每天 09:00 出发
             current_loc = self.hotel
@@ -149,7 +124,7 @@ class TripScheduler:
                     time_slot="09:00",
                     category="hotel",
                     title=f"从【{self.hotel.name}】出发",
-                    description="整理随身物品，开始一天的充实行程",
+                    description=f"{curr_date.strftime('%Y-%m-%d')} 晨起出行，开启第 {day_num} 天行程",
                     location=self.hotel,
                 )
             )
@@ -160,13 +135,11 @@ class TripScheduler:
 
             # --- 上午行程 ---
             for s in morning_spots:
-                # 通勤
                 dist = haversine_distance(current_loc.lng, current_loc.lat, s.lng, s.lat)
                 t_min, t_desc = estimate_transit(dist)
                 current_time_min += t_min
                 day_dist += dist
 
-                # 游玩
                 start_s = minutes_to_hhmm(current_time_min)
                 end_min = current_time_min + s.duration_minutes
                 end_s = minutes_to_hhmm(end_min)
@@ -176,6 +149,11 @@ class TripScheduler:
                 is_open, open_msg = is_time_in_range(start_s, s.open_time)
                 if not is_open:
                     warnings.append(f"景点营业时间预警：{open_msg}")
+
+                # 闭馆校验
+                is_closed, closed_msg = is_spot_closed_on_date(s, curr_date)
+                if is_closed:
+                    warnings.append(closed_msg)
 
                 day_items.append(
                     ScheduleItem(
@@ -235,19 +213,15 @@ class TripScheduler:
                     ScheduleItem(
                         time_slot=f"{lunch_start_s} - {lunch_end_s}",
                         category="meal",
-                        title="午餐：周边自选特色简餐",
-                        description="在附近商圈或特色街区享用午餐，休整蓄力",
-                        cost=40.0,
+                        title="午餐：周边自选特色简餐 / 美食街",
+                        description="在附近街区或商圈享用顺路午餐，休息蓄力",
+                        cost=35.0,
                     )
                 )
-                day_cost += 40.0
+                day_cost += 35.0
 
-            # --- 下午行程与特色小吃 ---
-            for s_idx, s in enumerate(afternoon_spots):
-                # 穿插特色小吃（若有多于 1 个下午景点，在景点间穿插；若只有 1 个，在游览后穿插）
-                if s_idx == 0 and len(afternoon_spots) >= 2:
-                    pass
-
+            # --- 下午行程 ---
+            for s in afternoon_spots:
                 dist = haversine_distance(current_loc.lng, current_loc.lat, s.lng, s.lat)
                 t_min, t_desc = estimate_transit(dist)
                 current_time_min += t_min
@@ -262,6 +236,10 @@ class TripScheduler:
                 is_open, open_msg = is_time_in_range(start_s, s.open_time)
                 if not is_open:
                     warnings.append(f"景点营业时间预警：{open_msg}")
+
+                is_closed, closed_msg = is_spot_closed_on_date(s, curr_date)
+                if is_closed:
+                    warnings.append(closed_msg)
 
                 day_items.append(
                     ScheduleItem(
@@ -281,42 +259,45 @@ class TripScheduler:
                 day_cost += s.cost
                 current_loc = s
 
-            # 下午茶/特色小吃档 (15:30 ~ 17:00 之间)
-            snack_rest = self._pick_best_restaurant(
-                current_loc, "snack", restaurants, used_restaurant_names, "16:00"
-            )
-            if snack_rest:
-                snack_start_s = minutes_to_hhmm(max(current_time_min, 16 * 60))
-                snack_end_s = minutes_to_hhmm(max(current_time_min, 16 * 60) + 40)
-                current_time_min = max(current_time_min, 16 * 60) + 40
-
-                dist = haversine_distance(current_loc.lng, current_loc.lat, snack_rest.lng, snack_rest.lat)
-                _, t_desc = estimate_transit(dist, mode="walking")
-                day_dist += dist
-
-                day_items.append(
-                    ScheduleItem(
-                        time_slot=f"{snack_start_s} - {snack_end_s}",
-                        category="snack",
-                        title=f"特色小吃尝鲜：【{snack_rest.name}】",
-                        description=f"品尝地道风味：{snack_rest.cuisine or '地方小吃'}，评分 {snack_rest.rating}，人均约 ¥{snack_rest.cost:.0f}。{snack_rest.recommend_reason}",
-                        location=snack_rest,
-                        transit_info=t_desc,
-                        cost=snack_rest.cost,
-                        open_time=snack_rest.open_time,
-                        rating=snack_rest.rating,
-                    )
+            # --- 优化点 3：下午茶小吃档生理间隔动态抑制机制 ---
+            # 只有在下午游览在 17:00 前完成时，才安排下午茶小吃档；
+            # 若游玩已超过 17:00，则自动跳过下午茶，避免在 20 分钟内连吃两顿饭！
+            if current_time_min <= 17 * 60:
+                snack_rest = self._pick_best_restaurant(
+                    current_loc, "snack", restaurants, used_restaurant_names, "16:00"
                 )
-                day_cost += snack_rest.cost
-                current_loc = snack_rest
+                if snack_rest:
+                    snack_start_min = max(current_time_min, 15 * 60 + 30)
+                    snack_start_s = minutes_to_hhmm(snack_start_min)
+                    snack_end_s = minutes_to_hhmm(snack_start_min + 40)
+                    current_time_min = snack_start_min + 40
 
-            # --- 晚餐 / 夜市 (18:00 ~ 20:30) ---
+                    dist = haversine_distance(current_loc.lng, current_loc.lat, snack_rest.lng, snack_rest.lat)
+                    _, t_desc = estimate_transit(dist, mode="walking")
+                    day_dist += dist
+
+                    day_items.append(
+                        ScheduleItem(
+                            time_slot=f"{snack_start_s} - {snack_end_s}",
+                            category="snack",
+                            title=f"特色小吃尝鲜：【{snack_rest.name}】",
+                            description=f"品尝地道风味：{snack_rest.cuisine or '地方小吃'}，评分 {snack_rest.rating}，人均约 ¥{snack_rest.cost:.0f}。{snack_rest.recommend_reason}",
+                            location=snack_rest,
+                            transit_info=t_desc,
+                            cost=snack_rest.cost,
+                            open_time=snack_rest.open_time,
+                            rating=snack_rest.rating,
+                        )
+                    )
+                    day_cost += snack_rest.cost
+                    current_loc = snack_rest
+
+            # --- 晚餐 / 告别餐 (18:00 ~ 20:00) ---
             dinner_start_min = max(current_time_min, 18 * 60)
             dinner_start_s = minutes_to_hhmm(dinner_start_min)
-            dinner_end_s = minutes_to_hhmm(dinner_start_min + 90)
-            current_time_min = dinner_start_min + 90
+            dinner_end_s = minutes_to_hhmm(dinner_start_min + 80)
+            current_time_min = dinner_start_min + 80
 
-            # 优先看有没有夜市或正餐
             dinner_rest = self._pick_best_restaurant(
                 current_loc, "night_market", restaurants, used_restaurant_names, dinner_start_s
             ) or self._pick_best_restaurant(
@@ -337,7 +318,7 @@ class TripScheduler:
                     ScheduleItem(
                         time_slot=f"{dinner_start_s} - {dinner_end_s}",
                         category="meal",
-                        title=f"{'夜市逛吃' if is_market else '晚餐'}：【{dinner_rest.name}】",
+                        title=f"{'夜市逛吃' if is_market else ('返程前告别餐' if is_last_day else '晚餐')}：【{dinner_rest.name}】",
                         description=f"{dinner_rest.cuisine or '地道风味'}，高德评分 {dinner_rest.rating} 分，"
                         f"人均约 ¥{dinner_rest.cost:.0f}。{dinner_rest.recommend_reason}",
                         location=dinner_rest,
@@ -351,21 +332,39 @@ class TripScheduler:
                 day_cost += dinner_rest.cost
                 current_loc = dinner_rest
 
-            # 回酒店
-            back_dist = haversine_distance(current_loc.lng, current_loc.lat, self.hotel.lng, self.hotel.lat)
-            _, back_desc = estimate_transit(back_dist)
-            day_dist += back_dist
+            # --- 优化点 4：最后一天返程接驳 vs 平日返回酒店 ---
+            if is_last_day and self.departure_point:
+                # 终点直接规划至车站/机场，留足缓冲时间
+                dep_dist = haversine_distance(current_loc.lng, current_loc.lat, self.departure_point.lng, self.departure_point.lat)
+                _, dep_desc = estimate_transit(dep_dist, mode="auto")
+                day_dist += dep_dist
+                dep_time_s = minutes_to_hhmm(current_time_min + 15)
 
-            day_items.append(
-                ScheduleItem(
-                    time_slot=minutes_to_hhmm(current_time_min + 20),
-                    category="hotel",
-                    title=f"返回【{self.hotel.name}】",
-                    description="结束愉快的一天，回酒店休息充能",
-                    location=self.hotel,
-                    transit_info=back_desc,
+                day_items.append(
+                    ScheduleItem(
+                        time_slot=dep_time_s,
+                        category="transit",
+                        title=f"前往【{self.departure_point.name}】准备返程",
+                        description=f"行程结束，建议提前 60~90 分钟抵达车站/机场办理进站或值机手续，结束愉快的旅程。",
+                        location=self.departure_point,
+                        transit_info=dep_desc,
+                    )
                 )
-            )
+            else:
+                back_dist = haversine_distance(current_loc.lng, current_loc.lat, self.hotel.lng, self.hotel.lat)
+                _, back_desc = estimate_transit(back_dist)
+                day_dist += back_dist
+
+                day_items.append(
+                    ScheduleItem(
+                        time_slot=minutes_to_hhmm(current_time_min + 20),
+                        category="hotel",
+                        title=f"返回【{self.hotel.name}】",
+                        description="结束愉快充实的一天，回酒店休整充电",
+                        location=self.hotel,
+                        transit_info=back_desc,
+                    )
+                )
 
             # 主题提炼
             theme_keywords = [s.name for s in curr_spots]
@@ -385,8 +384,10 @@ class TripScheduler:
         unassigned_names = [s.name for s in unassigned]
         summary_text = (
             f"为您精心规划了 {self.city} {self.total_days} 天行程，"
-            f"共涵盖 {len(spots) - len(unassigned)} 个核心景点与 {len(used_restaurant_names)} 家精选美食。"
+            f"共涵盖 {len(spots) - len(unassigned)} 个核心景点与精选地道美食。"
         )
+        if calendar_warnings:
+            summary_text += "\n" + " \n".join(calendar_warnings)
 
         return FullTripPlan(
             city=self.city,

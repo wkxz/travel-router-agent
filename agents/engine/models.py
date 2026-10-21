@@ -30,6 +30,7 @@ class Spot(LocationPoint):
     tags: List[str] = field(default_factory=list)
     rating: float = 4.5
     cost: float = 0.0  # 门票预算
+    is_indoor: bool = False  # 是否为室内场馆（博物馆、科技馆等）
 
 
 @dataclass

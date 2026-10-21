@@ -8,10 +8,16 @@
 import sys
 import os
 
-# 确保能 import agents.engine
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+if sys.stdout.encoding.lower() != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
-from agents.engine import (
+# 确保能 import pages_agents.engine
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".edgeone", "agent-python")))
+
+from pages_agents.engine import (
     LocationPoint,
     Spot,
     Restaurant,
@@ -20,7 +26,7 @@ from agents.engine import (
     render_markdown,
     render_dict,
 )
-from agents.engine.geo import is_time_in_range
+from pages_agents.engine.geo import is_time_in_range
 
 
 def test_optimizer():
