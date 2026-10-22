@@ -10,8 +10,10 @@ from .models import (
 )
 from .geo import haversine_distance, estimate_transit, is_time_in_range, cluster_spots_spatially
 from .optimizer import optimize_spots_route
-from .scheduler import TripScheduler
+from .travel import TravelTimes, Leg
+from .scheduler import TripScheduler, today_cn
 from .renderer import render_markdown, render_dict
+from .validator import validate_plan, InfeasiblePlanError
 
 __all__ = [
     "LocationPoint",
@@ -25,7 +27,12 @@ __all__ = [
     "is_time_in_range",
     "cluster_spots_spatially",
     "optimize_spots_route",
+    "TravelTimes",
+    "Leg",
     "TripScheduler",
+    "today_cn",
     "render_markdown",
     "render_dict",
+    "validate_plan",
+    "InfeasiblePlanError",
 ]

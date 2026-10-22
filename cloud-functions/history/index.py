@@ -37,6 +37,12 @@ final answer. They all share the same `run_id`. This handler:
   4. folds adjacent duplicate bubbles, which can happen because chat writes
      a user-index copy for the sidebar and the OpenAI session writes the
      same user input for model memory
+
+Trip plans: the itinerary is streamed to the browser as an SSE `plan` event and
+never repeated in the assistant's text, so on reload it would be lost. Step 1
+therefore keeps one kind of `function_call_output`: the output of
+generate_trip_itinerary, recognised by its `plan.kind == "trip_plan"` marker.
+It is attached to the assistant bubble of the same run as `message.plan`.
 """
 
 from __future__ import annotations
@@ -87,6 +93,48 @@ def _flatten_content(content: Any) -> str:
     if isinstance(content, str):
         return content
     return ""
+
+
+PLAN_KIND = "trip_plan"
+
+
+def _extract_plan(output: Any) -> dict | None:
+    """Copy of agents/_tools.py::extract_plan — cloud functions deploy separately
+    and cannot import the agents package. Keep the two in sync."""
+    if isinstance(output, str):
+        try:
+            output = json.loads(output)
+        except ValueError:
+            return None
+    if not isinstance(output, dict) or output.get("success") is not True:
+        return None
+    plan = output.get("plan")
+    return plan if isinstance(plan, dict) and plan.get("kind") == PLAN_KIND else None
+
+
+def _to_plan_fragment(record: Any) -> tuple[dict, str | None] | None:
+    """A generate_trip_itinerary output → an empty assistant fragment carrying `plan`."""
+    metadata = getattr(record, "metadata", None) or {}
+    sdk_item = getattr(record, "content", None)
+    if not isinstance(sdk_item, dict):
+        return None
+    if "function_call_output" not in (metadata.get("item_type"), sdk_item.get("type")):
+        return None
+    output = sdk_item.get("output")
+    if isinstance(output, list):
+        output = _flatten_content(output)
+    plan = _extract_plan(output)
+    if not plan:
+        return None
+    created_at = getattr(record, "created_at", 0) or 0
+    message = {
+        "id": getattr(record, "message_id", None) or f"plan-{created_at}",
+        "role": "assistant",
+        "content": "",
+        "timestamp": created_at,
+        "plan": plan,
+    }
+    return message, metadata.get("run_id")
 
 
 def _to_message(record: Any) -> tuple[dict, str | None] | None:
@@ -142,7 +190,10 @@ def _merge_assistant_fragments(items: list[tuple[dict, str | None]]) -> list[dic
             and msg["role"] == "assistant"
         )
         if same_run_assistant:
-            merged[-1]["content"] += "\n\n" + msg["content"]
+            prev = merged[-1]
+            prev["content"] = "\n\n".join(c for c in (prev["content"], msg["content"]) if c)
+            if msg.get("plan"):
+                prev["plan"] = msg["plan"]
         else:
             merged.append(dict(msg))
             last_run_id = run_id
@@ -158,6 +209,7 @@ def _dedupe_adjacent(messages: list[dict]) -> list[dict]:
             prev is not None
             and prev.get("role") == msg.get("role")
             and prev.get("content") == msg.get("content")
+            and not msg.get("plan")  # 不同轮次的行程即使文字相同也要保留
         ):
             continue
         deduped.append(msg)
@@ -189,7 +241,10 @@ class handler(BaseHTTPRequestHandler):
         try:
             history = store.get_messages(conversation_id, limit=100, order="asc") or []
 
-            visible = [pair for record in history if (pair := _to_message(record))]
+            visible = [
+                pair for record in history
+                if (pair := _to_message(record) or _to_plan_fragment(record))
+            ]
             messages = _dedupe_adjacent(_merge_assistant_fragments(visible))
 
             elapsed = int((time.time() - start) * 1000)

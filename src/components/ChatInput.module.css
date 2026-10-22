@@ -1,11 +1,11 @@
 .bar {
-  padding: 14px 20px 16px;
+  padding: 16px 24px 20px;
   border-top: 1px solid var(--bg-border);
   display: flex;
   flex-direction: column;
   gap: 8px;
   flex-shrink: 0;
-  background: rgba(255,255,255,.015);
+  background: rgba(255, 255, 255, 0.65); border-top: 1px solid rgba(226, 232, 240, 0.8);
 }
 
 /* preset chips */
@@ -16,15 +16,15 @@
   min-width: 0;
 }
 .presetChip {
-  padding: 5px 12px;
+  padding: 6px 14px;
   max-width: 100%;
   min-width: 0;
   border-radius: 999px;
   border: 1px solid var(--bg-border);
   background: var(--bg-elevated);
   color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: .68rem;
+  
+  font-size: 0.78rem;
   letter-spacing: .02em;
   cursor: pointer;
   white-space: nowrap;
@@ -50,8 +50,9 @@
   align-items: flex-end;
   gap: 10px;
   background: var(--bg-elevated);
-  border: 1px solid var(--bg-border);
+  border: 1.5px solid #cbd5e1;
   border-radius: var(--radius-lg);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
   padding: 10px 10px 10px 16px;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
@@ -69,8 +70,8 @@
   border: none;
   outline: none;
   color: var(--text-primary);
-  font-family: var(--font-mono);
-  font-size: .82rem;
+  
+  font-size: 0.94rem;
   line-height: 1.6;
   resize: none;
   min-height: 22px;
@@ -86,8 +87,8 @@
   height: 36px;
   border-radius: 50%;
   border: none;
-  background: var(--accent-gold);
-  color: #0a0a0f;
+  background: linear-gradient(135deg, #0d9488 0%, #059669 100%);
+  color: #ffffff;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -99,13 +100,13 @@
   box-shadow: 0 0 12px var(--accent-gold-glow);
 }
 .sendBtn:hover:not(:disabled) {
-  background: #ffe066;
+  background: linear-gradient(135deg, #0f766e 0%, #047857 100%);
   transform: scale(1.07);
   box-shadow: 0 0 20px var(--accent-gold-glow);
 }
 .sendBtn:active:not(:disabled) { transform: scale(.95); }
 .sendDisabled {
-  background: var(--bg-border);
+  background: #e2e8f0;
   color: var(--text-muted);
   box-shadow: none;
   cursor: not-allowed;

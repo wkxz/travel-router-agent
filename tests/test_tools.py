@@ -1,52 +1,126 @@
-"""测试 _tools.py 中的本地排程工具（无网络依赖部分）。"""
-import sys
-import os
+"""工具层端到端测试：经 OpenAI Agents SDK 的公开接口（ToolContext + on_invoke_tool）调用，
+覆盖参数 schema 解析与 run context 注入；高德请求由 FakeAmap 替身应答，不发网络请求。
+
+运行：./.venv/Scripts/python.exe -m unittest tests.test_tools -v
+"""
+
+import asyncio
 import json
+import unittest
+from unittest import mock
 
-if sys.stdout.encoding.lower() != 'utf-8':
-    try:
-        sys.stdout.reconfigure(encoding='utf-8')
-    except Exception:
-        pass
+from tests.fake_amap import FakeAmap, MONDAY  # 同时完成 app 别名挂载
+from agents.tool_context import ToolContext  # OpenAI Agents SDK
+import app._tools as tools
+import app._data.poi_repo as poi_repo
+from app._data.poi_repo import TripContext, PoiRepo
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".edgeone", "agent-python")))
 
-from pages_agents._tools import generate_trip_itinerary
+def call(tool, context: TripContext, **kwargs) -> dict:
+    args = json.dumps(kwargs, ensure_ascii=False)
+    tc = ToolContext(context=context, tool_name=tool.name, tool_call_id="t1", tool_arguments=args)
+    return json.loads(asyncio.run(tool.on_invoke_tool(tc, args)))
 
-def test_generate_itinerary_tool():
-    city = "北京"
-    total_days = 2
-    hotel_name = "王府井希尔顿酒店"
-    hotel_location = "116.4172,39.9142"
 
-    spots = [
-        {"name": "故宫博物院", "lng": 116.3970, "lat": 39.9180, "cost": 60, "duration_minutes": 180, "open_time": "08:30-17:00"},
-        {"name": "天坛公园", "lng": 116.4108, "lat": 39.8822, "cost": 34, "duration_minutes": 120, "open_time": "06:30-21:00"},
-        {"name": "颐和园", "lng": 116.2730, "lat": 39.9999, "cost": 30, "duration_minutes": 150, "open_time": "06:30-18:00"},
-    ]
+class ToolTestCase(unittest.TestCase):
+    def setUp(self):
+        self.fake = FakeAmap()
+        for target in (mock.patch.object(tools, "amap_get", self.fake),
+                       mock.patch.object(poi_repo, "amap_get", self.fake)):
+            target.start()
+            self.addCleanup(target.stop)
+        self.ctx = TripContext()
 
-    foods = [
-        {"name": "四季民福烤鸭店(故宫店)", "lng": 116.4020, "lat": 39.9150, "meal_type": "meal", "rating": 4.8, "cost": 150, "open_time": "10:30-21:30", "cuisine": "北京烤鸭"},
-        {"name": "门框胡同百年卤煮(新街口店)", "lng": 116.3720, "lat": 39.9400, "meal_type": "snack", "rating": 4.8, "cost": 45, "open_time": "09:30-02:00", "cuisine": "北京传统小吃"},
-        {"name": "南门涮肉(天坛店)", "lng": 116.4150, "lat": 39.8800, "meal_type": "meal", "rating": 4.7, "cost": 110, "open_time": "11:00-22:00", "cuisine": "老北京铜锅涮肉"},
-    ]
 
-    invoker = getattr(generate_trip_itinerary, "on_invoke_tool", None)
-    fn = invoker._get_wrapped_callable() if invoker and hasattr(invoker, "_get_wrapped_callable") else generate_trip_itinerary
+class TestSearchTools(ToolTestCase):
+    def test_spot_search_returns_ids_without_coordinates(self):
+        res = call(tools.search_scenic_spots, self.ctx, city="南京", keywords="南京博物院")
+        raw = json.dumps(res, ensure_ascii=False)
+        self.assertEqual(res["spots"][0]["id"], "B0MUSEUM")
+        for leak in ('"lng"', '"lat"', '"location"', "118.8"):
+            self.assertNotIn(leak, raw)
 
-    res_str = fn(
-        city=city,
-        total_days=total_days,
-        hotel_name=hotel_name,
-        hotel_location=hotel_location,
-        spots_json=json.dumps(spots, ensure_ascii=False),
-        foods_json=json.dumps(foods, ensure_ascii=False),
-    )
+    def test_spot_search_includes_museum_category(self):
+        call(tools.search_scenic_spots, self.ctx, city="南京", keywords="南京博物院")
+        self.assertIn("140000", self.fake.calls[0][1]["types"])
 
-    res = json.loads(res_str)
-    assert res.get("success") is True, f"Failed: {res}"
-    assert "北京 2 日游定制行程指南" in res.get("markdown")
-    print("✅ generate_trip_itinerary 工具函数调用成功！")
+    def test_food_search_near_spot_uses_repo_coordinates(self):
+        call(tools.search_scenic_spots, self.ctx, city="南京", keywords="南京博物院")
+        call(tools.search_food_and_snacks, self.ctx, city="南京", keywords="鸭血粉丝", near_id="B0MUSEUM")
+        path, params = self.fake.calls[-1]
+        self.assertEqual((path, params["location"]), ("/place/around", "118.823200,32.041000"))
+
+    def test_unknown_near_id_is_an_error(self):
+        res = call(tools.search_food_and_snacks, self.ctx, city="南京", keywords="面馆", near_id="B0FAKE")
+        self.assertIn("无法识别", res["error"])
+
+
+class TestItineraryTool(ToolTestCase):
+    def _prepare(self, ctx):
+        hotel = call(tools.geocode_location, ctx, address="新街口", city="南京")["id"]
+        station = call(tools.geocode_location, ctx, address="南京南站", city="南京")["id"]
+        call(tools.search_scenic_spots, ctx, city="南京", keywords="南京博物院")
+        call(tools.search_food_and_snacks, ctx, city="南京", keywords="鸭血粉丝", near_id="B0MUSEUM")
+        return hotel, station
+
+    def test_full_flow(self):
+        hotel, station = self._prepare(self.ctx)
+        res = call(tools.generate_trip_itinerary, self.ctx, city="南京", total_days=2,
+                   spots='[{"id": "B0MUSEUM", "duration_minutes": 180}, "B0LAKE"]',
+                   foods='["B0DUCK", "B0SNACK"]', hotel_id=hotel, departure_id=station,
+                   start_date=MONDAY, departure_time="17:30", must_eat="鸭血粉丝")
+        self.assertTrue(res["success"], res)
+        days = res["plan"]["days"]
+        titles = {d["date"]: [i["title"] for i in d["items"]] for d in days}
+        # 周一闭馆（信息来自 opentime2）→ 博物院只能排在周二
+        self.assertFalse(any("南京博物院" in t for t in titles["2026-10-26"]), titles)
+        self.assertTrue(any("南京博物院" in t for t in titles["2026-10-27"]), titles)
+        self.assertEqual(sum("鸭血粉丝" in t for ts in titles.values() for t in ts), 1, titles)
+        self.assertTrue(any("南京南站" in t for t in titles["2026-10-27"]))
+
+    def test_new_request_resolves_ids_from_previous_turn(self):
+        hotel, _ = self._prepare(self.ctx)
+        fresh = TripContext(repo=PoiRepo())  # 多轮对话：新请求的仓库是空的
+        n_before = len(self.fake.calls)
+        res = call(tools.generate_trip_itinerary, fresh, city="南京", total_days=1,
+                   spots='["B0LAKE"]', foods='["B0SNACK"]', hotel_id=hotel, start_date="2026-10-27")
+        self.assertTrue(res["success"], res)
+        # 只看 id 回查；/distance 是排程时的路网请求，另有测试覆盖
+        self.assertEqual(sorted(p for p, _ in self.fake.calls[n_before:] if p != "/distance"),
+                         ["/geocode/geo", "/place/detail", "/place/detail"])
+
+    def test_fabricated_spot_reported_as_unassigned(self):
+        res = call(tools.generate_trip_itinerary, self.ctx, city="南京", total_days=1,
+                   spots='["B0LAKE", "B0FAKE"]', foods="[]", start_date="2026-10-27")
+        self.assertTrue(res["success"], res)
+        self.assertTrue(any(u.startswith("B0FAKE") for u in res["plan"]["unassigned_spots"]), res["plan"])
+
+    def test_infeasible_departure_is_explained(self):
+        hotel, station = self._prepare(self.ctx)
+        res = call(tools.generate_trip_itinerary, self.ctx, city="南京", total_days=1, spots='["B0LAKE"]',
+                   foods="[]", hotel_id=hotel, departure_id=station, departure_time="00:30")
+        self.assertFalse(res["success"])
+        self.assertIn("过早", res["error"])
+
+    def test_bad_json(self):
+        res = call(tools.generate_trip_itinerary, self.ctx, city="南京", total_days=1, spots="[{坏", foods="[]")
+        self.assertIn("JSON", res["error"])
+
+    def test_output_is_plan_not_markdown(self):
+        res = call(tools.generate_trip_itinerary, self.ctx, city="南京", total_days=1,
+                   spots='["B0LAKE"]', foods="[]", start_date="2026-10-27")
+        self.assertNotIn("markdown", res)
+        self.assertIn("不要复述", res["display"])
+        self.assertEqual(tools.extract_plan(json.dumps(res, ensure_ascii=False))["city"], "南京")
+
+
+class TestExtractPlan(unittest.TestCase):
+    def test_rejects_non_plans(self):
+        for output in (None, "", "不是 JSON", '{"success": false, "error": "x"}',
+                       '{"success": true, "plan": {"kind": "other"}}', '{"count": 1, "spots": []}'):
+            self.assertIsNone(tools.extract_plan(output), output)
+
+
 
 if __name__ == "__main__":
-    test_generate_itinerary_tool()
+    unittest.main()

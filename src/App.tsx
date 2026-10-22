@@ -18,8 +18,6 @@ import ChatInput from './components/ChatInput';
 import DebugPanel from './components/DebugPanel';
 import CodeViewer from './components/CodeViewer';
 import ConversationSidebar from './components/ConversationSidebar';
-import GitHubLink from './components/GitHubLink';
-import DeployLink from './components/DeployLink';
 import { I18nProvider, LangToggle, useT, MessageKeys } from './i18n';
 import { deleteSnapshot, loadSnapshot, saveSnapshot } from './lib/chatUiStore';
 import styles from './App.module.css';
@@ -112,6 +110,7 @@ function AppInner() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [debugEvents, setDebugEvents] = useState<RawSseEvent[]>([]);
   const [rightPanelMode, setRightPanelMode] = useState<'code' | 'debug'>('code');
+  const [showDevPanel, setShowDevPanel] = useState<boolean>(false);
 
   // Conversation list (sidebar) state
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -374,6 +373,12 @@ function AppInner() {
         }, 1000);
       },
 
+      onPlan(plan) {
+        setMessages(prev =>
+          prev.map(m => (m.id === botMsgIdRef.current ? { ...m, plan } : m))
+        );
+      },
+
       onRawEvent(event) {
         // Every backend SSE frame flows through here, so this is the cheapest
         // hook for "first byte from backend".
@@ -581,13 +586,24 @@ function AppInner() {
         <div className={styles.chatPanel}>
           <header className={styles.header}>
             <div className={styles.headerLeft}>
-              <span className={styles.logo}>⬡</span>
+              <span className={styles.logo}>🧭</span>
               <div>
                 <p className={styles.title}>{t("app.title")}</p>
                 <p className={styles.subtitle}>{t("app.subtitle")}</p>
               </div>
             </div>
-            <ToolIndicators lamps={lamps} />
+            <div className={styles.headerRight}>
+              <ToolIndicators lamps={lamps} />
+              <button
+                type="button"
+                className={`${styles.devToggleBtn} ${showDevPanel ? styles.devToggleBtnActive : ''}`}
+                onClick={() => setShowDevPanel(prev => !prev)}
+                title="切换调试面板与源码"
+              >
+                <span>{showDevPanel ? '✕' : '{ }'}</span>
+                <span>{showDevPanel ? '收起调试' : '调试与源码'}</span>
+              </button>
+            </div>
           </header>
 
           <div className={styles.chatWindowShell}>
@@ -601,16 +617,16 @@ function AppInner() {
           <ChatInput onSend={handleSend} onStop={handleStop} onClear={handleClearHistory} disabled={loading} />
         </div>
 
-        <div className={styles.codePanel}>
-          {rightPanelMode === 'code' ? (
-            <CodeViewer />
-          ) : (
-            <DebugPanel events={debugEvents} onClear={() => setDebugEvents([])} />
-          )}
-        </div>
+        {showDevPanel && (
+          <div className={styles.codePanel}>
+            {rightPanelMode === 'code' ? (
+              <CodeViewer />
+            ) : (
+              <DebugPanel events={debugEvents} onClear={() => setDebugEvents([])} />
+            )}
+          </div>
+        )}
       </div>
-      <GitHubLink />
-      <DeployLink />
     </div>
   );
 }

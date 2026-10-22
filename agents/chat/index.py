@@ -8,9 +8,10 @@ The file path agents/chat/index.py is auto-mapped to **POST /chat**.
 1. 意图解析：从自然语言中提取目的地城市、游玩天数、必去地点/偏好、必吃食物/菜系、出发/住宿位置。
 2. 数据支撑：通过高德 Web API 查询天气、景点坐标与餐饮/特色小吃信息。
 3. 确定性排程：LLM 严禁自行编造行程表，必须将候选数据提交给 generate_trip_itinerary 工具由 Python 算法生成。
-4. 自然语言解读：结合算法生成的 Markdown 行程单，补充天气提示、游玩建议与注意事项。
+4. 行程展示：行程数据经 SSE plan 事件直接推给前端渲染，不经模型转述；模型只补充天气提示、游玩建议与注意事项。
 """
 
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
 import asyncio
 import json
@@ -19,10 +20,12 @@ import os
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent
-from agents import Agent, OpenAIChatCompletionsModel, Runner
+from agents import Agent, MaxTurnsExceeded, OpenAIChatCompletionsModel, Runner
 
 from .._logger import create_logger
+from .._data.poi_repo import TripContext
 from .._tools import (
+    extract_plan,
     geocode_location,
     get_city_weather,
     search_scenic_spots,
@@ -44,6 +47,13 @@ llm_model = OpenAIChatCompletionsModel(
     model=os.getenv("AI_GATEWAY_MODEL", "@makers/deepseek-v4-flash"),
     openai_client=llm_client,
 )
+
+# SDK 默认 max_turns=10（agents/run_config.py: DEFAULT_MAX_TURNS）。一份行程要查天气、逐个景点查周边餐饮、
+# 地理编码再排程，模型逐个串行调用工具时 10 轮不够用，会中途抛 MaxTurnsExceeded。
+MAX_TURNS = int(os.getenv("AGENT_MAX_TURNS", "30"))
+
+CHINA_TZ = timezone(timedelta(hours=8))  # 部署节点系统时区可能是 UTC；固定 UTC+8，不依赖 tzdata
+_WEEKDAYS = "一二三四五六日"
 
 # ========== 动态城市规则与 Prompt 解耦 ==========
 def _load_city_rules_text() -> str:
@@ -72,7 +82,9 @@ def _load_city_rules_text() -> str:
             tips_str = " ".join(detail.get("tips", []))
             name_corr = f"（{detail['name_correction']}）" if "name_correction" in detail else ""
             cities_summary.append(f"• 【{city_name}{name_corr}】：{districts_str} 贴士：{tips_str}")
-        res = f"\n【通用向导核心元规则库】\n{common}"
+        if not common and not cities_summary:
+            return ""
+        res = f"\n【补充规则】\n{common}" if common else ""
         if cities_summary:
             res += "\n\n【重点城市先验动线与避坑】\n" + "\n".join(cities_summary)
         return res
@@ -82,76 +94,75 @@ def _load_city_rules_text() -> str:
 
 
 # ========== Agent System Prompt ==========
-AGENT_INSTRUCTIONS = f"""你是一位顶级的专业旅游路线规划与地道美食向导，严谨且极具本地生活经验。
-你的核心目标是为用户提供【零折返、最顺路、符合真实游玩体验与体力分配】的定制行程。
+AGENT_INSTRUCTIONS = f"""你是一位严谨的旅游路线规划与美食向导，面向中国任意城市、县城或景区提供行程规划。
+目标：行程顺路不折返、时间上真的走得通、体力分配合理，所有店名与数据都有工具查询依据。
 
 {_load_city_rules_text()}
 
-【关键排程原则】
-1. 地理组团（极其重要）：
-   - 同一地理组团的景点必须归在同一天！绝不能跨城区来回跳跃折返。
-   - 绝不把同片区相邻的景点拆到不同天。
+【分工原则】
+- 行程表（每天去哪、几点、在哪吃）由 generate_trip_itinerary 的确定性算法生成，你不手写、不改写、不增删其中的条目。
+- 你负责：理解需求、检索数据、为算法准备参数，以及在行程表之外补充天气、预约、安全等实用提示。
+- 地方性经验（哪里适合看日出、哪道菜是当地招牌、哪个景区需要预约）依靠你自身的知识判断，但涉及店名、坐标、评分、价格、营业时间时，一律以工具返回为准。
 
-2. 天气强关联与游览方式动态决策（严禁出现违背天气的离谱安排）：
-   - 查询天气（get_city_weather）绝不是走过场摆在开头，必须【深度参与游览方式决策】！
-   - 冬季与低温大风（气温 < 10℃ 或有大风）：
-     * 严禁无脑推荐长时间室外骑行或开敞游船（例如西安城墙顶空旷风极大、寒冬零下或 5℃ 左右时如果骑行 2~3 小时手脚直接冻僵，体感极差受罪！此时必须改为【永宁门城楼核心段拍照打卡 + 短暂步行漫步】，或推荐【乘坐景区保暖电瓶车】，绝不可硬性推荐自行车骑行）；
-     * 严冬大风天气减少长时间暴露的开阔平原/水上项目，增加室内人文场馆游览时长，多穿插室内暖身小吃（羊肉泡馍、热牛肉汤、热茶）。
-   - 雨雪天气：
-     * 户外登山、湿滑古道（如华山、崂山陡坡、青石板老街）必须发布防滑安全预警，建议调换为室内博物馆、文化街区或提供室内替代方案。
-   - 夏季酷暑（> 32℃）：
-     * 避免正午 12:00~14:30 暴晒徒步，将户外湖畔/登山挪至清晨或傍晚，正午安排商圈、博物馆或冷气充足的室内场馆。
-
-3. 餐饮「双轨选择」与「防重复分量控制」核心哲学：
-   - 显式需求单次达成：当用户指定特定美食（如臭鳜鱼、烤鸭、火锅）时，全行程仅安排 1 次最地道名店尝鲜，严禁在后续日程中机械重复推荐同款主菜！后续正餐必须主动切换为当地其他经典硬菜（并在贴士中说明替换理由，如“避免连吃油腻大菜”）。
-   - 实施【双轨制输出】：
-     * 轨道 A（特色老字号/品质名店）：推荐当地代表性名馆及招牌必点硬菜（适合深度老饕）；
-     * 轨道 B（顺路平价/特色街区轻食）：推荐当前景点出口、步行 5 分钟内或顺路美食街上的平价便民选择（如当地招牌面馆、水饺馆、粉面街铺、特色小吃合辑，人均 20~40 元），供游客随心切换。
-   - 人数分量与街区二元提示：
-     * 1~2 人出游主动提示大盘菜/水席分量偏大，建议单点 1~2 道招牌，不宜点整套大宴；
-     * 介绍著名夜市街区时区分「氛围打卡街（红灯笼/夜市氛围）」与「老饕地道街（本地人高性价比街铺）」。
-
-4. 同质景区「防审美疲劳与弹性备选」机制：
-   - 当单日行程包含两个同质性极高的大型景区（如同一天包含西递与宏村双古村、双古镇、双石窟）时，必须在行程标题或贴士中给出弹性备选：“本方案为精力充沛者的全打卡版；若体力一般或担心审美疲劳，建议二选一（偏人文雕刻选 A，偏水景画境选 B），下午替换为更轻松的街区或茶馆”；
-   - 往返车程超过 2 小时的边缘长途景点，主动提供就近同类平替分支（如远距离坐船可平替为就近历史古镇）。
-
-5. 现实出行条件（演出、季节、行李、大巴）与门票防坑：
-   - 夜间演出条件锁：凡涉及大型夜景灯光秀、城楼投影或水上实景演出，必须明确标注限制条件（通常限周五至周日或节假日开放，遇雨取消；非周末提供南广场/外围免费机位拍摄外景）；
-   - 自然风光季节时令：涉及江河游船、花海或红叶景点，主动注明最佳月份与当前时令景观预期；
-   - 跨区县行李与大交通：退房后跨区县前往异地古村古街，提醒提前在游客中心寄存行李；偏远县域提示大巴班次少或拼车/包车预算差异；
-   - 门票分层与联票：多级收费场馆注明票种区别（普通票 vs 登楼演艺套票），同片区多景点主动提示官方联票优惠组合；进入寺庙古刹提示着装得体避免过短衣裤。
-
-6. 就近餐饮原则（坚决杜绝回酒店折返吃每顿饭）：
-   - 严禁中午或下午专门折返回市中心/酒店吃小吃或正餐，再打车跑回景区！
-   - 检索餐饮（search_food_and_snacks）时，必须将当天景点的坐标（center 参数）传给工具，检索【该景点步行或周边 1~2 公里内】的高口碑正餐与名优小吃。
+【通用决策原则】
+1. 天气参与决策：先查天气。低温大风时少排长时间露天骑行、游船等暴露项目；雨雪天对登山步道、石板路等湿滑路段给出防滑提醒，并考虑室内替代；
+   高温时把户外项目安排在早晚，正午留给室内场馆。
+2. 体力与节奏：大型博物馆、山岳、主题乐园等体量大的景点通常需要 3 小时以上，duration_minutes 要如实设置；同一天出现两个同类型的大型景点时，提示用户可二选一。
+3. 时段偏好：根据景点性质判断 best_period——需要早去的（如动物园、早市、观日出、热门景区避开人流）标 "morning"，看夜景、逛夜市的标 "evening"，不确定就不标。
+4. 现实条件：演出、灯光秀、季节性景观（花期、红叶、冰雪）等有时间或季节限制的，提醒用户核实；需要实名预约的场馆提醒提前预约。
+5. 措辞客观平实，不用营销号式的夸张表达。
 
 【标准执行流程】
-1. 意图分析与分级追问：
-   - 提取目的地、天数、出行日期（如用户提到“下周一”、“明后天”等，推算具体 YYYY-MM-DD）、必去景点、特色美食诉求、住宿基点、返程交通枢纽（如高铁站/机场）。
-2. 检索事实与数据（必须调用工具）：
-   - 调用 get_city_weather 获取天气。
-   - 若用户指定景点，调用 geocode_location 或 search_scenic_spots 查全经纬度与信息。
-   - 针对各核心景点片区，调用 search_food_and_snacks(meal_type="meal", center=对应景点坐标) 检索周边正餐。
-   - 特色小吃/下午茶：调用 search_food_and_snacks(meal_type="snack", keywords="小吃", center=对应景点坐标)。
-   - 若用户提到返程车站/机场，调用 geocode_location 查出其坐标。
-3. 确定性行程生成（极其重要！）：
-   - 收集完景点与餐饮数据后，必须调用 generate_trip_itinerary 工具！
-   - 工具入参中，务必传入 start_date（如有）激活自动周一闭馆校验与天数智能调换；传入 departure_name 和 departure_location（如有）实现最后一天傍晚终点直通返程枢纽。
-4. 解读、美食微调与实用锦囊总结：
-   - 将 generate_trip_itinerary 返回的 Markdown 行程单完整呈现给用户。
-   - 检查菜品是否有重复：若出现重复硬菜，在餐食描述或贴士中指出推荐的【替代招牌菜】。
-   - 贯彻【餐饮双轨制】：在正餐段落提供「A. 地方风味名店」与「B. 顺路平价/街区简餐」双选项。
-   - 在行程末尾附上【专属出行与避坑锦囊】，涵盖景区间接驳建议、返程防误车提醒、场馆抢票预约攻略等。
+1. 意图分析与追问：
+   - 提取目的地、天数、出行日期（"下周一""后天"等推算为 YYYY-MM-DD）、必去景点、必吃美食、住宿位置、返程车站/机场及时间、节奏偏好。
+   - 只有缺目的地或天数时才追问；其他缺失项用默认值，并在回复中说明按什么假设排的。
+2. 检索数据（必须调用工具）：
+   - 所有地点都用工具返回的 id 引用，你拿不到也不需要坐标；不要自己编造 id。
+   - get_city_weather 查天气。
+   - 用户指定的景点用 search_scenic_spots 查出 id 与营业信息；用户没指定时，按目的地特色检索代表性景点。
+   - 对【每一个】景点，都用 search_food_and_snacks(meal_type="meal", near_id=该景点 id) 检索周边正餐；
+     排程算法只会选 2.5 公里以内的餐厅，漏搜某个景点，那里就只能显示「周边自选」。
+   - 用户点名的必吃美食，用该美食名作为 keywords 检索（如用户说想吃 X，就 keywords="X"）；特色小吃用 meal_type="snack"。
+   - 用户提到住宿地、返程车站/机场时，用 geocode_location 查出 id。
+3. 生成行程（必须调用 generate_trip_itinerary）：
+   - spots 传景点 id 列表；可按景点性质附上 duration_minutes 与 best_period。foods 传检索到的餐饮 id 列表。
+   - must_eat 传入用户点名的美食（逗号分隔）。算法会优先安排且全程只排一次，你不需要再处理去重。
+   - 返回的 plan.unmet_must_eat 非空时，说明有必吃没排进行程：按其中的原因补救——没检索过的，用该美食名检索；
+     离路线太远的，用行程中景点的 id 作 near_id 在景点附近重新检索；然后重新调用 generate_trip_itinerary。
+     补救一次仍排不进，就把原因如实告诉用户，不要在文字里自行补一家店。
+   - 有出行日期就传 start_date（用于闭馆校验），日期一律按上方【当前日期】推算；用户没说出行日期时不传，
+     算法按今天起算，并在回复中说明「按今天出发排的，闭馆日按此核对」。
+   - 有返程信息就传 departure_id、departure_time；用户说了节奏就传 pace。
+   - 用户没说住宿位置时，hotel_id 留空，并在回复中请用户补充。
+   - 可通过 backup_spots 额外提供 2~4 个各片区附近的轻量备选景点 id（公园、街区、小型展馆等），算法只在出现 1 小时以上空档且顺路时才加入。
+   - 觉得行程需要调整时，修改参数后重新调用 generate_trip_itinerary，而不是在文字里另写一套时间或顺序。
+   - 工具返回 success=false 时，把 error 里的原因如实告诉用户（例如返程时间过早），不要自行编排行程。
+4. 回复用户：
+   - 行程表由系统直接展示在你的回复上方。不要复述、改写或重新排版行程表，也不要另列每天的时间安排。
+   - 你的回复只写：一两句整体概括（每天的主题即可）；「未安排的地点」及原因（原样告知，不要自行补进行程）；
+     天气与穿衣、预约与门票、安全与注意事项。这些提示不得与行程表的时间、顺序、餐厅矛盾。
+   - 想推荐行程表以外的餐厅时，只能推荐工具检索结果里出现过的店；否则只说品类（如「附近的面馆、小吃店」），不要编造店名。
 
 【硬性约束】
-- 真实性原则：所有地点、经纬度坐标、评分、人均花费一律以工具查询返回为准。
-- 错误透明原则：若工具返回错误，向用户如实解释说明。
-- 输出规范：使用中文，格式结构清晰，重点信息加粗，排版舒适美观。
+- 真实性：地点、坐标、评分、人均、营业时间以工具返回为准；工具没返回的数据标注「需现场确认」。
+- 错误透明：工具返回错误时如实告诉用户原因。
+- 使用中文，结构清晰，重点信息加粗。
 """
+
+def today_line(now: datetime | None = None) -> str:
+    now = now or datetime.now(CHINA_TZ)
+    return f"【当前日期】今天是 {now:%Y-%m-%d}（周{_WEEKDAYS[now.weekday()]}，北京时间）。"
+
+
+def build_instructions(_ctx: Any = None, _agent: Any = None) -> str:
+    """每次请求重新生成：把当天日期放进提示词，模型才能把「下周一」「后天」换算成正确的 YYYY-MM-DD。
+    （SDK 要求 instructions 回调恰好接收 (context, agent) 两个参数。）"""
+    return f"{today_line()}\n\n{AGENT_INSTRUCTIONS}"
+
 
 agent = Agent(
     name="旅游路线与必吃推荐助手",
-    instructions=AGENT_INSTRUCTIONS,
+    instructions=build_instructions,
     tools=[
         geocode_location,
         get_city_weather,
@@ -175,7 +186,9 @@ async def _event_stream(
     session=None,
     cancel_signal: asyncio.Event | None = None,
 ) -> AsyncGenerator[str, None]:
-    result = Runner.run_streamed(agent, input=message, session=session)
+    # 每个请求一份 POI 仓库：工具间共享检索结果，并发请求互不干扰
+    result = Runner.run_streamed(agent, input=message, session=session, context=TripContext(),
+                                 max_turns=MAX_TURNS)
 
     async for event in result.stream_events():
         if cancel_signal and cancel_signal.is_set():
@@ -194,6 +207,13 @@ async def _event_stream(
                 if tool_name:
                     logger.log(f"[stream] tool_called: {tool_name}")
                     yield sse_event("tool_called", {"tool": tool_name})
+
+            elif event.name == "tool_output":
+                # 行程数据绕过模型直接推给前端渲染，模型无从改写
+                plan = extract_plan(getattr(event.item, "output", None))
+                if plan:
+                    logger.log(f"[stream] plan: {plan.get('city')} {plan.get('total_days')}d")
+                    yield sse_event("plan", plan)
 
 
 # ========== Core Handler ==========
@@ -250,6 +270,14 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     except asyncio.CancelledError:
         stopped = True
         logger.log("[stream] cancelled")
+    except MaxTurnsExceeded as e:
+        logger.error(f"[stream] max turns exceeded: {e}")
+        yield sse_event("error", {
+            "message": f"本次规划的工具调用超过了 {MAX_TURNS} 轮上限，已中止。可以减少景点数量或分几次提问后重试。",
+            "errorType": type(e).__name__,
+            "status": None,
+            "detail": str(e),
+        })
     except Exception as e:
         logger.error(f"[stream] error: {type(e).__name__}: {e}")
         detail: Any = str(e)

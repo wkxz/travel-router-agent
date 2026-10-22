@@ -23,6 +23,7 @@ build/
 
 # 本地开发产物（手工复现构建生成的）
 _pages_agents/
+public/maps/*.png
 
 # OS
 .DS_Store

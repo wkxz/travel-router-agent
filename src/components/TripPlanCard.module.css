@@ -1,0 +1,106 @@
+/* ── 行程卡片：数据来自排程引擎，样式沿用全局配色变量 ── */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px dashed var(--bg-border);
+}
+
+.header { display: flex; flex-direction: column; gap: 6px; }
+.title { font-size: 1.12rem; font-weight: 700; color: var(--text-primary); }
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: .85rem;
+  color: var(--text-secondary);
+}
+.stats b { color: var(--accent-gold); font-weight: 700; }
+.stats em { font-style: normal; color: var(--text-muted); font-size: .78rem; }
+.hotel { font-size: .82rem; color: var(--text-muted); }
+
+/* ── 提示与未安排 ── */
+.notes { list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: .82rem; color: var(--text-secondary); }
+.unassigned {
+  padding: 10px 14px;
+  font-size: .84rem;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius-md);
+}
+.unassigned ul { margin: 4px 0 0 18px; }
+
+/* ── 按天切换 ── */
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: .85rem;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--bg-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.tab small { color: var(--text-muted); font-size: .74rem; }
+.tab:hover { border-color: var(--day-color); }
+.tabActive {
+  color: var(--text-primary);
+  font-weight: 600;
+  border-color: var(--day-color);
+  background: color-mix(in srgb, var(--day-color) 8%, var(--bg-elevated));
+}
+.tabDot { width: 8px; height: 8px; border-radius: 50%; background: var(--day-color); }
+
+.dayPanel { display: flex; flex-direction: column; gap: 10px; }
+.dayMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-size: .9rem;
+}
+.dayMeta span { font-size: .8rem; color: var(--text-muted); }
+
+/* ── 时间线 ── */
+.timeline { list-style: none; display: flex; flex-direction: column; }
+.item {
+  display: grid;
+  grid-template-columns: 96px 26px 1fr;
+  gap: 0 8px;
+  padding: 9px 0;
+  border-top: 1px solid var(--bg-subtle);
+}
+.item:first-child { border-top: none; }
+.time { font-family: var(--font-mono); font-size: .8rem; color: var(--text-secondary); padding-top: 2px; white-space: nowrap; }
+.icon { font-size: 1rem; line-height: 1.5; }
+.body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.itemTitle { font-weight: 600; color: var(--text-primary); }
+.transit { font-size: .78rem; color: var(--accent-gold); }
+.desc { font-size: .82rem; color: var(--text-secondary); }
+.meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .76rem; color: var(--text-muted); }
+.warnings { list-style: none; display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.warnings li {
+  font-size: .74rem;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+}
+.cat_free .itemTitle, .cat_hotel .itemTitle { font-weight: 500; color: var(--text-secondary); }
+
+.tips summary { cursor: pointer; font-size: .86rem; font-weight: 600; color: var(--text-secondary); }
+.tips ol { margin: 8px 0 0 20px; display: flex; flex-direction: column; gap: 4px; font-size: .82rem; color: var(--text-secondary); }
+
+@media (max-width: 560px) {
+  .item { grid-template-columns: 1fr; gap: 2px; }
+  .icon { display: none; }
+}

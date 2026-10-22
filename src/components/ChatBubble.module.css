@@ -1,63 +1,71 @@
+/* ── ChatBubble modern light travel styling ── */
 .row {
   display: flex;
   align-items: flex-end;
-  gap: 10px;
+  gap: 12px;
   animation: fadeUp .25s ease both;
-  max-width: 100%;
+  width: 100%;
 }
 .botRow  { justify-content: flex-start; }
 .userRow { justify-content: flex-end; }
 
 .avatar {
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   border-radius: 50%;
-  background: var(--bg-elevated);
-  border: 1px solid var(--bg-border);
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: .8rem;
+  font-size: .95rem;
   color: var(--accent-gold);
   flex-shrink: 0;
-  font-family: var(--font-display);
-  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  font-weight: 600;
 }
 .userAvatar {
-  color: var(--text-secondary);
-  font-size: .65rem;
+  color: #1e40af;
+  font-size: .95rem;
+  background: #eff6ff;
+  border-color: #bfdbfe;
 }
 
 .bubble {
   position: relative;
-  max-width: 68%;
-  padding: 12px 16px 24px;
-  border-radius: var(--radius-md);
-  font-size: .82rem;
-  line-height: 1.65;
+  font-size: 0.94rem;
+  line-height: 1.75;
   word-break: break-word;
 }
 
 .botBubble {
+  max-width: 95%;
+  width: 95%;
+  padding: 22px 26px 30px;
   background: var(--bot-bubble);
   border: 1px solid var(--bot-border);
   color: var(--text-primary);
-  border-radius: var(--radius-md) var(--radius-md) var(--radius-md) 4px;
+  border-radius: 18px 18px 18px 6px;
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.05);
 }
 
 .userBubble {
+  max-width: 78%;
+  padding: 14px 20px 24px;
   background: var(--user-bubble);
   border: 1px solid var(--user-border);
-  color: var(--text-primary);
-  border-radius: var(--radius-md) var(--radius-md) 4px var(--radius-md);
+  color: var(--user-text, #1e3a8a);
+  border-radius: 18px 18px 6px 18px;
+  box-shadow: 0 2px 10px rgba(59, 130, 246, 0.08);
   white-space: pre-wrap;
+  font-weight: 500;
 }
 
 .time {
   position: absolute;
-  bottom: 6px;
-  right: 12px;
-  font-size: .6rem;
+  bottom: 8px;
+  right: 14px;
+  font-size: .62rem;
   color: var(--text-muted);
   letter-spacing: .04em;
 }
@@ -69,10 +77,10 @@
 
 /* ── Markdown rendered content ── */
 .markdown {
-  line-height: 1.7;
+  line-height: 1.75;
 }
 .markdown :global(p) {
-  margin: 0.4em 0;
+  margin: 0.5em 0;
 }
 .markdown :global(p:first-child) {
   margin-top: 0;
@@ -81,93 +89,170 @@
   margin-bottom: 0;
 }
 .markdown :global(strong) {
-  color: var(--text-primary);
+  color: #0f172a;
   font-weight: 600;
 }
 .markdown :global(em) {
   font-style: italic;
+  color: var(--text-secondary);
 }
 .markdown :global(h1),
 .markdown :global(h2),
 .markdown :global(h3),
 .markdown :global(h4) {
-  margin: 0.6em 0 0.3em;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text-primary);
 }
-.markdown :global(h1) { font-size: 1.1em; }
-.markdown :global(h2) { font-size: 1.0em; }
-.markdown :global(h3) { font-size: 0.95em; }
+.markdown :global(h1) {
+  font-size: 1.25rem;
+  margin: 0.8em 0 0.4em;
+  color: #0f172a;
+}
+.markdown :global(h2) {
+  font-size: 1.12rem;
+  margin: 1.2em 0 0.5em;
+  color: var(--accent-gold);
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 6px;
+}
+.markdown :global(h3) {
+  font-size: 1.02rem;
+  margin: 1.0em 0 0.4em;
+  color: #1e293b;
+}
+
 .markdown :global(ul),
 .markdown :global(ol) {
-  margin: 0.4em 0;
-  padding-left: 2em;
-  list-style-position: outside;
+  margin: 0.6em 0;
+  padding-left: 1.5em;
 }
 .markdown :global(li) {
-  margin: 0.2em 0;
-  padding-left: 0.15em;
+  margin: 0.35em 0;
+  line-height: 1.7;
 }
+
 .markdown :global(code) {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid var(--bg-border);
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
   border-radius: 4px;
-  padding: 0.15em 0.4em;
+  padding: 0.15em 0.45em;
   font-family: var(--font-mono);
   font-size: 0.88em;
+  color: #0d9488;
 }
 .markdown :global(pre) {
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid var(--bg-border);
-  border-radius: 6px;
-  padding: 10px 14px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 16px;
   overflow-x: auto;
-  margin: 0.5em 0;
+  margin: 0.8em 0;
 }
 .markdown :global(pre code) {
   background: none;
   border: none;
   padding: 0;
-  font-size: 0.82em;
+  font-size: 0.84em;
+  color: #334155;
 }
+
 .markdown :global(blockquote) {
   border-left: 3px solid var(--accent-gold);
-  padding-left: 12px;
-  margin: 0.5em 0;
-  color: var(--text-secondary);
+  background: rgba(13, 148, 136, 0.06);
+  border-radius: 0 8px 8px 0;
+  padding: 10px 16px;
+  margin: 12px 0;
+  color: #334155;
+  font-size: 0.92rem;
 }
+
 .markdown :global(table) {
-  border-collapse: collapse;
-  margin: 0.5em 0;
-  font-size: 0.85em;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  margin: 16px 0;
+  font-size: 0.88rem;
+  line-height: 1.55;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
 }
 .markdown :global(th),
 .markdown :global(td) {
-  border: 1px solid var(--bg-border);
-  padding: 0.35em 0.6em;
+  padding: 10px 14px;
+  border-bottom: 1px solid #f1f5f9;
+  border-right: 1px solid #f1f5f9;
+  vertical-align: top;
+}
+.markdown :global(th:last-child),
+.markdown :global(td:last-child) {
+  border-right: none;
+}
+.markdown :global(tr:last-child td) {
+  border-bottom: none;
 }
 .markdown :global(th) {
-  background: rgba(255, 255, 255, 0.04);
+  background: #f8fafc;
+  color: var(--accent-gold);
   font-weight: 600;
-  text-align: left;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  border-bottom: 1px solid #e2e8f0;
 }
+.markdown :global(tr:hover td) {
+  background: #f8fafc;
+}
+
 .markdown :global(hr) {
   border: none;
-  border-top: 1px solid var(--bg-border);
-  margin: 0.8em 0;
+  border-top: 1px solid #e2e8f0;
+  margin: 1.2em 0;
 }
 .markdown :global(a) {
   color: var(--accent-gold);
   text-decoration: underline;
+  transition: opacity 0.2s;
+}
+.markdown :global(a:hover) {
+  opacity: 0.85;
 }
 
-/* Streaming caret — blinks at the end of the last line of streaming markdown.
- *
- * Implementation: rendered as an `::after` pseudo-element on the last child of
- * the markdown container, so it sits inline at the end of the final paragraph
- * (or list item, code block, etc.). A separate sibling <span> next to <Markdown>
- * doesn't work — react-markdown's last block (usually <p>) is `display: block`
- * and pushes any sibling onto its own line. */
+.markdown :global(details) {
+  margin: 18px 0;
+  padding: 12px 18px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  transition: all 0.25s ease;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.03);
+}
+.markdown :global(details:hover) {
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+.markdown :global(details[open]) {
+  padding: 16px 20px 22px;
+  background: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.06);
+}
+.markdown :global(summary) {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.94rem;
+  color: var(--accent-gold);
+  user-select: none;
+  padding: 6px 0;
+  outline: none;
+  transition: color 0.2s ease;
+}
+.markdown :global(summary:hover) {
+  color: #0f766e;
+}
+
+/* Streaming caret */
 .markdownStreaming > *:last-child::after {
   content: '';
   display: inline-block;

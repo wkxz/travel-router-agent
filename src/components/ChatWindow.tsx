@@ -27,13 +27,14 @@ export default function ChatWindow({ messages, loading }: Props) {
    * takes over the "still working" signal — so we never end up with two
    * stacked bot bubbles for the same in-flight turn.
    */
-  const showTypingIndicator = loading && !(lastMsg?.role === 'assistant' && lastMsg.content.length > 0);
+  const showTypingIndicator =
+    loading && !(lastMsg?.role === 'assistant' && (lastMsg.content.length > 0 || lastMsg.plan));
 
   return (
     <div ref={windowRef} className={styles.window}>
       {messages.length === 0 && (
         <div className={styles.empty}>
-          <span className={styles.emptyIcon}>⬡</span>
+          <span className={styles.emptyIcon}>🧭</span>
           <p className={styles.emptyTitle}>{t("empty.title")}</p>
           <p className={styles.emptyHint}>
             {t("empty.hint")}
@@ -50,7 +51,7 @@ export default function ChatWindow({ messages, loading }: Props) {
 
       {showTypingIndicator && (
         <div className={styles.typingRow}>
-          <div className={styles.avatar}>⬡</div>
+          <div className={styles.avatar}>🧭</div>
           <div className={styles.typing}>
             <span />
             <span />

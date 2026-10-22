@@ -16,6 +16,7 @@ import type {
   Message,
   ListConversationsParams,
   ListConversationsResponse,
+  TripPlan,
 } from './types';
 
 export const API = {
@@ -37,6 +38,7 @@ export interface RawSseEvent {
 export interface StreamCallbacks {
   onTextDelta: (delta: string) => void;
   onToolCalled: (toolName: string) => void;
+  onPlan?: (plan: TripPlan) => void;
   onDone: () => void;
   onError: (err: Error) => void;
   onRawEvent?: (event: RawSseEvent) => void;
@@ -81,7 +83,7 @@ export async function fetchConversationHistory(
 
 /**
  * Stream POST /chat via SSE
- * Backend pushes events: text_delta / tool_called / done / error
+ * Backend pushes events: text_delta / tool_called / plan / done / error
  *
  * Returns an AbortController the caller can use to abort (or pair with /chat/stop for graceful abort).
  */
@@ -196,6 +198,9 @@ function dispatchSseChunk(part: string, cb: StreamCallbacks, markDone: () => voi
         break;
       case 'tool_called':
         cb.onToolCalled(parsed.tool);
+        break;
+      case 'plan':
+        if (parsed?.kind === 'trip_plan') cb.onPlan?.(parsed as TripPlan);
         break;
       case 'error':
         cb.onError(new Error(parsed.message || 'agent returned error'));

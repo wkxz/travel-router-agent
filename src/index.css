@@ -5,33 +5,43 @@
 }
 
 :root {
-  --bg-base: #0a0a0f;
-  --bg-surface: #111118;
-  --bg-elevated: #18181f;
-  --bg-border: #2a2a38;
+  /* ══════════════════════════════════════════════════════════════
+     60-30-10 优雅旅行自然配色方案
+     60% 主色：清润柔光风景与高通透白/象牙底
+     30% 辅助色：深墨蓝灰高雅字色与柔和中性线条（久看不累）
+     10% 点缀色：山湖青翠绿（低饱和高级探索感）
+     ══════════════════════════════════════════════════════════════ */
+  --bg-base: #f1f5f9;
+  --bg-surface: rgba(255, 255, 255, 0.85);
+  --bg-elevated: #ffffff;
+  --bg-border: #e2e8f0;
+  --bg-subtle: #f8fafc;
 
-  --text-primary: #f0f0f8;
-  --text-secondary: #8888aa;
-  --text-muted: #44445a;
+  --text-primary: #1e293b;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
 
-  --accent-gold: #f5c842;
-  --accent-gold-dim: #f5c84230;
-  --accent-gold-glow: #f5c84260;
+  /* 10% 点缀色：低饱和山海青碧绿，沉稳治愈 */
+  --accent-gold: #0d9488;
+  --accent-gold-dim: rgba(13, 148, 136, 0.12);
+  --accent-gold-glow: rgba(13, 148, 136, 0.35);
 
-  --user-bubble: #1e1e2e;
-  --user-border: #3a3a5a;
-  --bot-bubble: #151520;
-  --bot-border: #252535;
+  --user-bubble: #eff6ff;
+  --user-border: #bfdbfe;
+  --user-text: #1e3a8a;
+  --bot-bubble: #ffffff;
+  --bot-border: #e2e8f0;
 
-  --font-display: 'Syne', sans-serif;
-  --font-mono: 'DM Mono', monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: 'DM Mono', Consolas, monospace;
 
   --radius-sm: 6px;
   --radius-md: 12px;
-  --radius-lg: 20px;
-  --radius-xl: 28px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
 
-  --shadow-card: 0 8px 40px rgba(0,0,0,0.5);
+  --shadow-card: 0 16px 48px rgba(15, 23, 42, 0.08), 0 4px 16px rgba(15, 23, 42, 0.04);
   --transition-fast: 140ms cubic-bezier(.4,0,.2,1);
   --transition-med: 280ms cubic-bezier(.4,0,.2,1);
 }
@@ -41,16 +51,19 @@ html, body, #root {
   width: 100%;
   background: var(--bg-base);
   color: var(--text-primary);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
 }
 
 /* scrollbar */
-::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--bg-border); border-radius: 2px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
 /* Language toggle */
 .lang-toggle {
@@ -63,47 +76,35 @@ html, body, #root {
   gap: 2px;
   padding: 6px 14px;
   border-radius: 20px;
-  border: none;
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid #e2e8f0;
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(12px);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
   cursor: pointer;
-  transition: background 0.3s ease, box-shadow 0.3s ease;
+  transition: all 0.25s ease;
   line-height: 1;
 }
 .lang-toggle:hover {
-  background: rgba(255, 255, 255, 0.08);
-  box-shadow: 0 0 20px rgba(245, 200, 66, 0.06);
+  background: #ffffff;
+  border-color: var(--accent-gold);
+  box-shadow: 0 4px 14px rgba(13, 148, 136, 0.15);
 }
 .lang-toggle:active {
   transform: scale(0.96);
 }
 .lang-toggle__label {
   display: inline-block;
-  font-family: var(--font-mono);
   font-size: 12px;
-  font-weight: 400;
+  font-weight: 500;
   color: var(--text-muted);
-  transition: font-size 0.35s cubic-bezier(.4, 0, .2, 1),
-              color 0.35s cubic-bezier(.4, 0, .2, 1),
-              font-weight 0.35s cubic-bezier(.4, 0, .2, 1),
-              transform 0.35s cubic-bezier(.4, 0, .2, 1),
-              text-shadow 0.35s ease;
-  transform: scale(0.9);
+  transition: all 0.25s ease;
+  transform: scale(0.92);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 .lang-toggle__label--active {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 700;
   color: var(--accent-gold);
   transform: scale(1);
-  text-shadow: 0 0 12px var(--accent-gold-glow);
-}
-.lang-toggle__sep {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-  opacity: 0.4;
-  margin: 0 3px;
-  user-select: none;
 }

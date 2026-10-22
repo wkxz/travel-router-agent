@@ -93,13 +93,13 @@ class TestSchedulerV2(unittest.TestCase):
         categories = [item.category for item in plan.days[0].items]
         self.assertNotIn("snack", categories, "下午严重超时时不应再塞入紧凑下午茶小吃")
 
-    def test_city_rules_decoupling(self):
-        """测试通用元规则库解耦读取无误"""
-        rules_text = _load_city_rules_text()
-        self.assertIn("通用向导核心元规则库", rules_text)
-        self.assertIn("气候与时令感知法则", rules_text)
-        self.assertIn("体能守恒与审美防疲劳法则", rules_text)
-        self.assertIn("餐饮体验去重", rules_text)
+    def test_prompt_has_no_city_specific_rules(self):
+        """提示词面向任意城市：不得出现针对某个城市/景区/菜品的专属规则"""
+        from pages_agents.chat.index import AGENT_INSTRUCTIONS
+        self.assertEqual(_load_city_rules_text(), "", "city_rules.json 默认不应注入任何规则")
+        for word in ("西安", "城墙", "永宁门", "华山", "崂山", "西递", "宏村", "水席", "臭鳜鱼",
+                     "羊肉泡馍", "熊猫", "成都", "南京", "北京", "火锅", "烤鸭"):
+            self.assertNotIn(word, AGENT_INSTRUCTIONS, f"提示词里出现了地域专属内容：{word}")
 
     def test_spatial_clustering(self):
         """测试纯数学空间层次聚类在无人工规则下能自然成组"""

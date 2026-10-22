@@ -25,23 +25,26 @@ class LocationPoint:
 class Spot(LocationPoint):
     """旅游景点"""
     duration_minutes: int = 120  # 预计建议游玩时长
-    open_time: str = "08:30-17:30"
+    open_time: str = ""  # 空串 = 高德未提供，排程时标注「需现场确认」，不编造默认值
     closed_days: List[int] = field(default_factory=list)  # 0=周一, 6=周日，常见如博物馆周一闭馆
     tags: List[str] = field(default_factory=list)
-    rating: float = 4.5
-    cost: float = 0.0  # 门票预算
+    rating: Optional[float] = None  # None = 无评分数据
+    cost: Optional[float] = None  # 门票参考；None = 无数据（≠ 免费）
     is_indoor: bool = False  # 是否为室内场馆（博物馆、科技馆等）
+    best_period: str = ""  # 最佳游览时段："" 不限 | "morning" 宜早去 | "evening" 宜傍晚/夜间
 
 
 @dataclass
 class Restaurant(LocationPoint):
     """餐饮/小吃点"""
     meal_type: str = "meal"  # meal(正餐) | snack(特色小吃) | night_market(夜市)
-    rating: float = 4.5
-    cost: float = 50.0  # 人均预算
-    open_time: str = "10:00-22:00"
-    cuisine: str = ""  # 菜系/品类，如川菜、北京小吃、火锅
+    rating: Optional[float] = None  # None = 无评分数据
+    cost: Optional[float] = None  # 人均；None = 无数据
+    open_time: str = ""
+    cuisine: str = ""  # 高德返回的品类，如「川菜」「中餐厅」
+    category: str = ""  # 高德完整分类，如「餐饮服务;快餐厅;xx」，用于识别快餐
     recommend_reason: str = ""
+    dish_key: str = ""  # 命中的用户必吃美食（来自 must_eat 参数）；非空时全程只安排一次
 
 
 @dataclass
@@ -53,7 +56,7 @@ class ScheduleItem:
     description: str
     location: Optional[LocationPoint] = None
     transit_info: Optional[str] = None  # 如 "驾车约 15 分钟 (4.2 km)"
-    cost: float = 0.0
+    cost: Optional[float] = None  # None = 无数据或不适用
     open_time: str = ""
     rating: Optional[float] = None
     warnings: List[str] = field(default_factory=list)  # 如 "营业时间接近打烊，请注意"
@@ -63,11 +66,13 @@ class ScheduleItem:
 class DayItinerary:
     """单日行程单"""
     day_number: int  # 第 1 天、第 2 天
-    theme: str  # 本日主题，如 "历史人文与老北京小吃漫游"
+    theme: str  # 本日主题，由当天景点名拼成
+    date: str = ""  # "YYYY-MM-DD"，校验闭馆日用
     items: List[ScheduleItem] = field(default_factory=list)
     total_spots: int = 0
     total_cost: float = 0.0
     estimated_distance_km: float = 0.0
+    has_unknown_cost: bool = False  # 当日有项目缺价格数据，total_cost 未计入
 
 
 @dataclass
@@ -77,5 +82,7 @@ class FullTripPlan:
     total_days: int
     hotel: Optional[LocationPoint]
     days: List[DayItinerary] = field(default_factory=list)
-    unassigned_spots: List[str] = field(default_factory=list)
+    unassigned_spots: List[str] = field(default_factory=list)  # 「名称（未安排原因）」
+    unmet_must_eat: List[str] = field(default_factory=list)  # 「美食（没排进行程的原因）」
     summary: str = ""
+    departure_min: Optional[int] = None  # 返程车次/航班时刻（当日分钟数），校验到站缓冲用
