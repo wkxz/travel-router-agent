@@ -1,7 +1,7 @@
 """高德 Web 服务客户端：项目里唯一直接访问高德的地方。
 
 - Key 只从环境变量 AMAP_API_KEY 读取，绝不硬编码、绝不打印；
-- 全局节流 + 10021 限流退避重试；
+- 全局节流 + QPS 限流（10019~10022）退避重试；
 - 失败统一返回 {"error": "..."}，让模型能如实解释原因。
 """
 
@@ -19,7 +19,13 @@ MIN_INTERVAL = 0.35
 _qps_lock = threading.Lock()
 _last_call_at = 0.0
 
-QPS_EXCEEDED = "10021"
+# QPS 超限类错误码：都按限流退避重试，且与「查不到」区分开。
+# 2026-10-23 测评实测出现 10022（info=CGQPS_HAS_EXCEEDED_THE_LIMIT），旧代码只认 10021，直接当失败返回给了模型。
+QPS_CODES = {"10019", "10020", "10021", "10022"}
+
+
+def is_qps_error(data: dict) -> bool:
+    return str(data.get("infocode")) in QPS_CODES or "QPS_HAS_EXCEEDED" in str(data.get("info"))
 
 
 def _throttle() -> None:
@@ -60,10 +66,12 @@ def amap_get(path: str, params: dict, retries: int = 3) -> dict:
             return data
 
         info = f"{data.get('info')}（infocode={data.get('infocode')}）"
-        if str(data.get("infocode")) == QPS_EXCEEDED and attempt < retries - 1:
-            last_error = f"高德接口限流，已重试 {attempt + 1} 次：{info}"
-            time.sleep(1.0 * (attempt + 1))
-            continue
+        if is_qps_error(data):
+            last_error = f"高德接口限流（请求过于频繁，不代表查不到），已重试 {attempt + 1} 次：{info}"
+            if attempt < retries - 1:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            return {"error": last_error}
         return {"error": f"高德接口返回错误：{info}"}
 
     return {"error": last_error or "高德接口连续重试失败，请稍后重试"}

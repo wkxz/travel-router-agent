@@ -25,6 +25,19 @@ _OPEN_RANGE_RE = re.compile(_RANGE)
 _OPEN_SINGLE_RE = re.compile(_WD + r"\s*(?=\d|开放|营业)")
 
 
+# 「墓室仅周二至周五开放」「地宫仅周末开放」：只说某个子设施，不代表整个景区的开放日。
+# 实测中山陵营业时间原文含这句，旧逻辑把它当成全景区只在周二至周五开放，周六日被误判闭馆。
+_PARTIAL_ONLY_RE = re.compile(rf"([一-龥]{{1,8}})仅(?:在)?(?:每)?{_WD}[^；;，,。]*")
+_WHOLE_SITE_SUBJECTS = ("景区", "本馆", "全馆", "园区", "场馆", "本景区", "全园", "景点")
+
+
+def _strip_partial_clauses(text: str) -> str:
+    def repl(m: re.Match) -> str:
+        subject = m.group(1)
+        return m.group(0) if any(subject.endswith(w) for w in _WHOLE_SITE_SUBJECTS) else " "
+    return _PARTIAL_ONLY_RE.sub(repl, text)
+
+
 def _day_span(a: str, b: str) -> List[int]:
     start, end = _WEEKDAY_CHARS[a], _WEEKDAY_CHARS[b]
     return list(range(start, end + 1)) if start <= end else list(range(start, 7)) + list(range(0, end + 1))
@@ -37,7 +50,7 @@ def parse_closed_days(open_time: str) -> Optional[List[int]]:
     - 「周二至周日 09:00-17:00」→ 开放日之外的都算闭馆 → [0]
     - 文本里没有可识别的星期信息 → None（调用方再走名称关键词兜底）
     """
-    text = open_time or ""
+    text = _strip_partial_clauses(open_time or "")
     closed: set = set()
     for a, b in _CLOSED_RANGE_RE.findall(text):
         closed.update(_day_span(a, b))
@@ -99,22 +112,50 @@ def _centroid(spots: List[Spot], fallback: LocationPoint) -> Tuple[float, float]
 
 EXACT_MAX_SPOTS = 10      # 景点数不超过它时穷举所有分天方案（状态压缩 DP，10 个点约百万次运算，<1s）
 UNASSIGNED_PENALTY = 10_000  # 少排一个景点的代价，远大于任何通勤差：先保证排进去的最多，再比路程
-BALANCE_WEIGHT = 0.25     # 每天负荷偏离平均值 1 分钟的代价（相当于多 0.25 分钟通勤），避免某天塞满、某天空着
+# 每天负荷（游玩+通勤，分钟）平方和的权重：总量一定时平方和越小越均衡。旧版按「偏离平均值」计，平均值把排不进的
+# 景点也算了进去（上海用例里迪士尼 540 分钟把平均值抬到 570），反而鼓励把一天塞满、另一天空 5 小时。
+# 0.001：把 90 分钟从 470 分钟的一天挪到 210 分钟的一天，均衡项约省 30，抵得过约 30 分钟的额外通勤。
+BALANCE_WEIGHT_SQ = 0.001
+# 判断一天放不放得下时，通勤按直线估算的 1.25 倍算：实测高德驾车耗时普遍比直线估算长约 30%，
+# 按估算刚好放得下的一天，排时间轴时会超时（上海用例武康路「拖到晚餐之后」）。只用于可行性判断，不影响路程比较。
+FEASIBILITY_TRAVEL_FACTOR = 1.25
+EVENING_WINDOW_MIN = 175  # 晚餐后到 22:30 可用于夜游的时间：同一天的夜游景点总时长不能超过它
+EVENING_DAYTIME_PENALTY = 90  # 宜傍晚的景点只能放在晚上不可用的那天（如返程日）时的代价：能避开就避开
 _PERIOD_RANK = {"morning": 0, "evening": 2}
 
 
-def _best_day_route(hotel: LocationPoint, spots: List[Spot]) -> Tuple[List[Spot], int]:
+def split_evening(spots: List[Spot], evening_ok: bool) -> Tuple[List[Spot], List[Spot]]:
+    """当天宜傍晚的景点里，哪些真的放在晚上、哪些只能改为白天去。返回 (晚上游, 改白天)。
+
+    晚上不可用（返程日赶车）时全部改白天；否则按时长从长到短放进晚餐后的 EVENING_WINDOW_MIN，
+    放不下的改白天（广州用例：永庆坊、大佛寺同天都标了傍晚，晚上只放得下一个）。
+    分天算法与排程器共用这个函数，保证两边对「谁在晚上」的判断一致。
+    """
+    evening = [s for s in spots if s.best_period == "evening"]
+    if not evening_ok:
+        return [], evening
+    kept, used = [], 0
+    for s in sorted(evening, key=lambda x: (-x.duration_minutes, x.name)):
+        if used + s.duration_minutes <= EVENING_WINDOW_MIN:
+            kept.append(s)
+            used += s.duration_minutes
+    kept = [s for s in evening if s in kept]  # 保持原顺序
+    return kept, [s for s in evening if s not in kept]
+
+
+def _best_day_route(hotel: LocationPoint, spots: List[Spot], evening_ok: bool = True) -> Tuple[List[Spot], int]:
     """当天景点的最短游览顺序（住宿出发、回到住宿）及往返通勤分钟数。
 
-    遵守时段约束：宜早去的排最前、宜傍晚的排最后（与排程器 order_by_period 一致）。
+    遵守时段约束：宜早去的排最前、真正放在晚上的（见 split_evening）排最后；改为白天的按白天景点排。
     每天至多 4 个景点，全排列最多 24 种，直接穷举。
     """
+    night = {id(s) for s in split_evening(spots, evening_ok)[0]}
     def leg(a, b) -> int:
         return estimate_transit(haversine_distance(a.lng, a.lat, b.lng, b.lat))[0]
 
     best, best_cost = list(spots), None
     for perm in itertools.permutations(spots):
-        ranks = [_PERIOD_RANK.get(s.best_period, 1) for s in perm]
+        ranks = [2 if id(s) in night else 0 if s.best_period == "morning" else 1 for s in perm]
         if ranks != sorted(ranks):
             continue
         pts = [hotel, *perm, hotel]
@@ -130,30 +171,49 @@ def _exact_split(
     date_list: List[date],
     budgets: List[int],
     max_spots_per_day: int,
+    evening_ok: List[bool],
+    end_points: List[Optional[LocationPoint]],
 ) -> List[List[Spot]]:
     """穷举所有「景点 → 天」的分配，选出：排进去的景点最多 → 总通勤最短 → 每天负荷最均衡。
 
     每天的景点子集必须满足：当天不闭馆、不超过每日景点数、游玩+通勤不超过当天预算。
+    宜傍晚的景点优先放在晚上可用的日子；放到晚上不可用的那天（如返程日）时按白天游，并计入额外代价。
+    end_points[d] 非空时（返程日的车站），可行性按「最后一个景点 → 车站」的实际估算距离判断。
     """
     n, days = len(spots), len(date_list)
-    mean_load = sum(s.duration_minutes for s in spots) / days
+
+    def leg(a, b) -> int:
+        return estimate_transit(haversine_distance(a.lng, a.lat, b.lng, b.lat))[0]
+
+    def feasible(order: List[Spot], d: int) -> bool:
+        travel, cur = 0, hotel
+        for s in order:
+            travel += leg(cur, s)
+            cur = s
+        if end_points[d] is not None:
+            travel += leg(cur, end_points[d])
+        play = sum(s.duration_minutes for s in order)
+        return play + travel * FEASIBILITY_TRAVEL_FACTOR <= budgets[d]
 
     # 每天可行的子集：mask -> (代价, 游览顺序)
     options: List[Dict[int, Tuple[float, List[Spot]]]] = []
-    route_cache: Dict[int, Tuple[List[Spot], int]] = {}
+    route_cache: Dict[Tuple[int, bool], Tuple[List[Spot], int]] = {}
     for d in range(days):
-        opts: Dict[int, Tuple[float, List[Spot]]] = {0: (BALANCE_WEIGHT * mean_load, [])}
+        opts: Dict[int, Tuple[float, List[Spot]]] = {0: (0.0, [])}
         open_idx = [i for i in range(n) if not is_spot_closed_on_date(spots[i], date_list[d])[0]]
         for k in range(1, min(max_spots_per_day, len(open_idx)) + 1):
             for combo in itertools.combinations(open_idx, k):
                 mask = sum(1 << i for i in combo)
-                if mask not in route_cache:
-                    route_cache[mask] = _best_day_route(hotel, [spots[i] for i in combo])
-                order, travel = route_cache[mask]
-                if estimate_route_minutes(hotel, order) > budgets[d]:
+                key = (mask, evening_ok[d])
+                if key not in route_cache:
+                    route_cache[key] = _best_day_route(hotel, [spots[i] for i in combo], evening_ok[d])
+                order, travel = route_cache[key]
+                if not feasible(order, d):
                     continue
                 load = travel + sum(s.duration_minutes for s in order)
-                opts[mask] = (travel + BALANCE_WEIGHT * abs(load - mean_load), order)
+                # 宜傍晚却只能白天去的（返程日、或当晚已排满夜游），每个计一笔代价：能避开就避开
+                penalty = EVENING_DAYTIME_PENALTY * len(split_evening(order, evening_ok[d])[1])
+                opts[mask] = (travel + BALANCE_WEIGHT_SQ * load * load + penalty, order)
         options.append(opts)
 
     # DP：第 d 天之前已用掉的景点集合 -> (最小代价, 每天的子集)
@@ -185,6 +245,8 @@ def split_spots_by_time_and_calendar(
     target_daily_budget_min: int = 420,  # 单日游玩+通勤预算（不含用餐）
     max_spots_per_day: int = 3,
     day_budgets_min: Optional[List[int]] = None,  # 逐日预算，覆盖 target_daily_budget_min（如返程日更短）
+    evening_ok: Optional[List[bool]] = None,  # 逐日晚上是否可用（返程日赶车时不可用），默认都可用
+    end_points: Optional[List[Optional[LocationPoint]]] = None,  # 逐日终点（返程日为车站），默认回住宿
 ) -> Tuple[List[List[Spot]], List[Tuple[Spot, str]], List[str]]:
     """空间聚类 + 闭馆避让 + 按数量上限与时间预算装箱。
 
@@ -213,7 +275,9 @@ def split_spots_by_time_and_calendar(
         return f"每日景点数（≤{max_spots_per_day}）或游玩时长已排满"
 
     if len(spots) <= EXACT_MAX_SPOTS:
-        chunks = _exact_split(hotel, spots, date_list, budgets, max_spots_per_day)
+        chunks = _exact_split(hotel, spots, date_list, budgets, max_spots_per_day,
+                              list(evening_ok or [True] * total_days),
+                              list(end_points or [None] * total_days))
         placed = {id(s): d for d, chunk in enumerate(chunks) for s in chunk}
         for s in spots:
             if id(s) not in placed:

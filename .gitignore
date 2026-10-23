@@ -38,3 +38,6 @@ Thumbs.db
 # 本地工具链版本固定（各人自己管）
 .python-version
 uv.toml
+
+# 真实环境测评输出（含模型回复与店铺数据）
+eval/results/
