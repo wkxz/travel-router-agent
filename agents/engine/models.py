@@ -32,6 +32,7 @@ class Spot(LocationPoint):
     cost: Optional[float] = None  # 门票参考；None = 无数据（≠ 免费）
     is_indoor: bool = False  # 是否为室内场馆（博物馆、科技馆等）
     best_period: str = ""  # 最佳游览时段："" 不限 | "morning" 宜早去 | "evening" 宜傍晚/夜间
+    must_visit: bool = False  # 用户点名要去的：放不下时最后才舍弃（模型补充的景点不标）
 
 
 @dataclass

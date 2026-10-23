@@ -56,9 +56,17 @@ REPEAT_CUISINE_PENALTY = 6.0  # 同一菜系已吃过一次后的降权
 FAST_FOOD_MEAL_PENALTY = 4.0  # 正餐时段降权高德分类为「快餐厅」的店；附近只有它时仍可选
 PRICEY_THRESHOLD = 150        # 用户没给预算时，人均超过这个数的店按超出部分降权（实测曾选中人均 ¥331 / ¥406 的店）
 PRICEY_PENALTY_PER_100 = 1.5  # 每超出 ¥100 扣的分，约等于评分低 1 分
+# 必吃强制优先的绕路上限随剩余机会放宽：返程日午餐/小吃 2km，全程最后一顿 3km 封顶。
+# 旧版最后一顿无条件优先，实测广州为「早茶」从北京路折回陈家祠绕路 3.8km；超过上限的交给缺口清单，
+# 由模型在行程景点附近补检索。
+MUST_EAT_LAST_DAY_KM = 2.0
+MUST_EAT_LAST_CHANCE_KM = 3.0
+MORNING_DISH_WORDS = ("早茶", "早点", "早餐", "早饭")  # 这类必吃不排晚餐（实测「早茶」被排进了晚餐）
 MUST_EAT_BONUS = 3.0          # 用户点名的必吃美食还没吃到时的加分
+MAX_MEAL_DETOUR_KM = 4.0      # 已知下一站时，比直接过去多绕 4km 以上的餐厅不作候选：单程 2km 内专门去吃一顿再回来可以，
+                              # 广州那种吃完回北京路、却折回 2.4km 外陈家祠（来回 4.7km）的不行
 ON_THE_WAY_KM = 1.0           # 比直接去下一站多走不超过 1km 的餐厅算「顺路」，即使离当前位置超过 MAX_MEAL_DIST_KM
-MUST_EAT_MAX_DETOUR_KM = 1.0  # 必吃在绕路不超过这个距离时强制优先；更远的留给更顺路的饭点（最后一顿除外）。
+MUST_EAT_MAX_DETOUR_KM = 1.0  # 必吃在绕路不超过这个距离时强制优先；更远的留给更顺路的饭点。
                               # 实测 2.5km 太宽：广州陈家祠→沙面路上有绕路 0km 的店，却被强制换成绕路 2.1km 的必吃店
 
 # 这些是高德的笼统分类，不代表具体菜系，不参与菜系去重
@@ -78,6 +86,10 @@ PACE_PROFILES = {
     "balanced": (3, 420),
     "compact": (4, 480),
 }
+
+
+def is_morning_dish(dish: str) -> bool:
+    return bool(dish) and any(w in dish for w in MORNING_DISH_WORDS)
 
 
 def cuisine_key(r: Restaurant) -> Optional[str]:
@@ -168,7 +180,8 @@ class TripScheduler:
         used_cuisines: Optional[set] = None,
         exclude: Optional[set] = None,
         next_stop: Optional[LocationPoint] = None,
-        last_chance: bool = False,
+        must_eat_detour_km: float = MUST_EAT_MAX_DETOUR_KM,
+        allow_morning_dish: bool = True,
     ) -> Optional[Restaurant]:
         """在指定类型中就近挑选营业中的餐厅；类型严格匹配，不拿小吃顶替正餐。只挑选，不登记为已用。
 
@@ -179,8 +192,9 @@ class TripScheduler:
         - 权重因子：距离近 > 评分高 > 营业状态。缺评分时按中性值参与排序，但不对外展示；
         - 传入 next_stop（吃完要去的下一站）时，按「绕路距离」排序：origin → 餐厅 → next_stop
           比直接去 next_stop 多走多少。只看离当前位置多近，会选出「近但方向相反」的店，造成折返；
-        - 传入 used_cuisines 时，用户点名且还没吃到的必吃美食（dish_key）在顺路（绕路 ≤ MUST_EAT_MAX_DETOUR_KM）
-          时优先于其他所有候选；不顺路就留给后面更顺路的饭点，到全程最后一顿（last_chance）时无条件优先。
+        - 传入 used_cuisines 时，用户点名且还没吃到的必吃美食（dish_key）在绕路 ≤ must_eat_detour_km 时
+          优先于其他所有候选；不顺路就留给后面更顺路的饭点（上限随剩余机会放宽，见 MUST_EAT_LAST_*）。
+        - allow_morning_dish=False（晚餐）时，早茶 / 早点类必吃店不参与。
           必吃全程只排一次；其他已吃过的菜系降权。
         """
         def detour(r: Restaurant) -> float:
@@ -202,7 +216,10 @@ class TripScheduler:
             # 离当前位置近，或者就在去下一站的路上（如回住处途中），都不算专程绕路
             and (haversine_distance(anchor.lng, anchor.lat, r.lng, r.lat) <= MAX_MEAL_DIST_KM
                  or (next_stop is not None and detour(r) <= ON_THE_WAY_KM))
+            # 离当前位置近但方向相反、绕路过大的也不要：宁可「周边自选」并写进缺口清单
+            and (next_stop is None or detour(r) <= MAX_MEAL_DETOUR_KM)
             and not (used_cuisines is not None and r.dish_key and r.dish_key in used_cuisines)
+            and (allow_morning_dish or not is_morning_dish(r.dish_key))
             and open_status(r) is not False
         ]
         if not candidates:
@@ -224,7 +241,7 @@ class TripScheduler:
         # 还没吃到的必吃优先：只靠加分时，评分高又更近的普通餐厅会把它挤掉；但不顺路时不强求，避免专程折返
         def prioritized(r: Restaurant) -> bool:
             return (used_cuisines is not None and bool(r.dish_key)
-                    and (last_chance or detour(r) <= MUST_EAT_MAX_DETOUR_KM))
+                    and detour(r) <= must_eat_detour_km)
         return max(candidates, key=lambda r: (prioritized(r), score(r)))
 
     def _infer_hotel(self, spots: List[Spot]) -> LocationPoint:
@@ -315,7 +332,7 @@ class TripScheduler:
             ordered = order_by_period(days_spots[day_idx])
             day.evening_ok = evening_ok[day_idx]
             # 晚上不可用（返程日赶车）或当晚已排满夜游时，多出的宜傍晚景点按白天游排，不能直接丢掉
-            evening, demoted = split_evening(ordered, day.evening_ok)
+            evening, demoted = split_evening(ordered, day.evening_ok, self.hotel)
             day.demoted = {s.name for s in demoted}
             daytime = [s for s in ordered if s not in evening]
             day.reserved_spots = len(evening)  # 夜游景点稍后才排，但要占每日景点数
@@ -409,8 +426,10 @@ class TripScheduler:
                               f"最近的【{nearest.name}】约 {dist:.1f} 公里；可在行程中景点附近重新检索）")
             else:
                 kinds = "、".join(sorted({meal_names.get(r.meal_type, r.meal_type) for r in cands}))
-                result.append(f"{dish}（附近有【{nearest.name}】，但营业时间或餐次类型（{kinds}）"
-                              f"与行程里的用餐时段对不上；小吃只排在下午 14:30–17:00）")
+                extra = "；早茶类只排在午餐/下午小吃" if is_morning_dish(dish) else ""
+                result.append(f"{dish}（附近有【{nearest.name}】，但不顺路（强制优先只接受绕路 ≤ "
+                              f"{MUST_EAT_LAST_CHANCE_KM:g} 公里），或营业时间、餐次类型（{kinds}）与用餐时段对不上；"
+                              f"小吃只排在下午 14:30–17:00{extra}）")
         return result
 
 
@@ -673,14 +692,16 @@ class _DayBuilder:
 
     def _add_meal(self, label: str, category: str, meal_types: Tuple[str, ...], earliest: int,
                   duration: int, placeholder: Optional[str], anchor: Optional[LocationPoint] = None,
-                  next_stop: Optional[LocationPoint] = None, last_chance: bool = False) -> bool:
+                  next_stop: Optional[LocationPoint] = None, must_eat_detour_km: float = MUST_EAT_MAX_DETOUR_KM,
+                  allow_morning_dish: bool = True) -> bool:
         rejected: set = set()  # 估算时营业、按真实路段到店时已打烊的候选
         while True:
             rest = self.s._pick_best_restaurant(
                 anchor or self.loc, meal_types, self.restaurants, self.used_names,
                 origin=self.loc, now=self.t, earliest=earliest, duration=duration,
                 used_cuisines=self.used_cuisines, exclude=rejected,
-                next_stop=next_stop or self.end_target, last_chance=last_chance,
+                next_stop=next_stop or self.end_target, must_eat_detour_km=must_eat_detour_km,
+                allow_morning_dish=allow_morning_dish,
             )
             if not rest:
                 road_km, t_desc, start, place = 0.0, None, max(self.t, earliest), self.loc
@@ -747,25 +768,31 @@ class _DayBuilder:
         # 上午 11 点后结束就 11:30 开饭，不再干等到 12:00
         return LUNCH_EARLIEST if self.t >= 11 * 60 else LUNCH_DEFAULT
 
+    def _must_eat_detour(self) -> float:
+        """午餐 / 小吃时必吃强制优先的绕路上限：返程日（后面只剩一两顿）放宽。"""
+        return MUST_EAT_LAST_DAY_KM if self.is_last_day else MUST_EAT_MAX_DETOUR_KM
+
     def add_lunch(self, next_stop: Optional[LocationPoint] = None) -> None:
         earliest = self.lunch_earliest()
         self._add_meal("午餐", "meal", ("meal",), earliest, LUNCH_DURATION, "景点周边自选简餐",
-                       next_stop=next_stop)
+                       next_stop=next_stop, must_eat_detour_km=self._must_eat_detour())
 
     def add_snack(self) -> None:
         # 下午游览拖过 17:00 就不再安排小吃，避免和晚餐连着吃
         if self.t > SNACK_LATEST_START:
             return
-        self._add_meal("特色小吃尝鲜", "snack", ("snack",), SNACK_EARLIEST, SNACK_DURATION, None)
+        self._add_meal("特色小吃尝鲜", "snack", ("snack",), SNACK_EARLIEST, SNACK_DURATION, None,
+                       must_eat_detour_km=self._must_eat_detour())
         if self.skipped_meals and self.skipped_meals[-1] == "特色小吃尝鲜":
             self.skipped_meals.pop()  # 小吃本就可选，赶车时省略不必提示
 
     def add_dinner(self, anchor: Optional[LocationPoint] = None) -> None:
         farewell = self.is_last_day and self.s.departure_point is not None
-        # 全程最后一顿正餐：还没吃到的必吃就算不太顺路也要安排
+        # 全程最后一顿正餐：还没吃到的必吃放宽到 3km 绕路；早茶类不排晚餐
         self._add_meal("返程前告别餐" if farewell else "晚餐", "meal", ("night_market", "meal"),
                        DINNER_DEFAULT, DINNER_DURATION, "周边自选晚餐", anchor=anchor,
-                       last_chance=self.is_last_day)
+                       must_eat_detour_km=MUST_EAT_LAST_CHANCE_KM if self.is_last_day else MUST_EAT_MAX_DETOUR_KM,
+                       allow_morning_dish=False)
 
     def finish(self) -> None:
         dep = self.s.departure_point

@@ -107,8 +107,11 @@ class TestMustEatDetourThreshold(unittest.TestCase):
         titles = [it.title for it in plan.days[0].items]
         lunch = next(t for t in titles if "午餐" in t)
         self.assertIn("清平饭店", lunch, titles)
-        self.assertTrue(any("银灯食府" in t for t in titles), titles)  # 必吃留到更顺路的晚餐
-        self.assertEqual(plan.unmet_must_eat, [])
+        # 早茶不排晚餐；午餐绕路 2.1km 超过返程日 2km 上限 → 不硬塞，作为未满足必吃交给缺口清单补检索
+        self.assertFalse(any("银灯食府" in t and "晚餐" in t for t in titles), titles)
+        self.assertEqual(len(plan.unmet_must_eat), 1, plan.unmet_must_eat)
+        self.assertIn("早茶类只排在午餐", plan.unmet_must_eat[0])
+        self.assertTrue(any(g["type"] == "must_eat_unmet" for g in plan.gaps), plan.gaps)
 
 
 if __name__ == "__main__":
@@ -203,3 +206,104 @@ class TestAmapQpsRetry(unittest.TestCase):
     def test_other_errors_not_retried(self):
         out = self._run([{"status": "0", "info": "INVALID_USER_KEY", "infocode": "10001"}])
         self.assertIn("INVALID_USER_KEY", out["error"])
+
+
+# ---------- 第四/五轮测评后的优化 ----------
+
+class TestEveningChoiceByRoute(unittest.TestCase):
+    """同天两个夜游只放得下一个：留哪个在晚上看全天路程。旧版按时长留广州塔，造成
+    花城广场 → 大佛寺（市中心）→ 广州塔（东）的往返；留大佛寺在晚上则顺路回住处。"""
+
+    def test_keeps_the_one_on_the_way_home(self):
+        from app.engine.calendar_pack import split_evening
+        huacheng = _gz("花城广场", 113.324593, 23.120498, 90)
+        tower = _gz("广州塔", 113.324521, 23.106428, 150, "evening")
+        dafosi = _gz("大佛寺", 113.268027, 23.122373, 90, "evening")
+        night, demoted = split_evening([huacheng, tower, dafosi], True, GZ_HOTEL)
+        self.assertEqual([s.name for s in night], ["大佛寺"])
+        self.assertEqual([s.name for s in demoted], ["广州塔"])
+
+    def test_without_hotel_falls_back_to_duration(self):
+        from app.engine.calendar_pack import split_evening
+        tower = _gz("广州塔", 113.324521, 23.106428, 150, "evening")
+        dafosi = _gz("大佛寺", 113.268027, 23.122373, 90, "evening")
+        night, _ = split_evening([tower, dafosi], True)
+        self.assertEqual([s.name for s in night], ["广州塔"])
+
+
+class TestGraduatedMustEatDetour(unittest.TestCase):
+    def _rest(self, name, lng, lat, dish=""):
+        return Restaurant(name=name, lng=lng, lat=lat, meal_type="meal", rating=4.5, cost=60.0, cuisine="粤菜",
+                          open_time="08:00-22:00", dish_key=dish)
+
+    def test_last_chance_capped(self):
+        """最后一顿也不再无条件优先。复现广州用例的几何：人在北京路（住处旁），必吃店在 2.4km 外的陈家祠方向，
+        吃完还要回住处 → 绕路约 4.7km。旧版最后一顿无条件优先会折返去吃；新版超过 3km 上限交给缺口清单。"""
+        dafosi = _gz("大佛寺", 113.268027, 23.122373, 120)
+        near = self._rest("北京路餐厅", 113.2690, 23.1230)
+        far = self._rest("陈家祠旁必吃", 113.2452, 23.1250, dish="烧鹅")
+        plan = TripScheduler("广州", 1, GZ_HOTEL, start_date="2026-10-22").schedule(
+            [dafosi], [near, far], must_eat=["烧鹅"])
+        titles = [it.title for it in plan.days[0].items]
+        self.assertFalse(any("陈家祠旁必吃" in t for t in titles), titles)
+        self.assertEqual(len(plan.unmet_must_eat), 1)
+        self.assertTrue(any(g["type"] == "must_eat_unmet" for g in plan.gaps))
+        # 唯一候选也绕路过大时：晚餐「周边自选」，并在缺口清单里给出补检索位置
+        self.assertTrue(any(g["type"] == "meal_without_candidate" and g["meal"] == "晚餐" for g in plan.gaps),
+                        plan.gaps)
+
+    def test_morning_dish_not_at_dinner(self):
+        """早茶店不在午餐路线上、却在晚餐回住处的路上：旧版会把「早茶」排进晚餐。"""
+        shamian = _gz("沙面岛", 113.244707, 23.106802, 120)
+        chenjiaci = _gz("陈家祠堂", 113.245158, 23.126692, 120)
+        dimsum = self._rest("点都德(北京路店)", 113.2670, 23.1220, dish="早茶")
+        lunch = self._rest("沙面西餐", 113.2449, 23.1071)
+        dinner = self._rest("北京路晚餐", 113.2690, 23.1230)
+        plan = TripScheduler("广州", 1, GZ_HOTEL, start_date="2026-10-22").schedule(
+            [shamian, chenjiaci], [dimsum, lunch, dinner], must_eat=["早茶"])
+        titles = [it.title for it in plan.days[0].items]
+        self.assertFalse(any("点都德" in t for t in titles if "晚餐" in t), titles)
+        # 早茶要么在午餐吃到（午餐排在陈家祠之后、回住处途中正好经过），要么报未满足，绝不进晚餐
+        at_lunch = any("点都德" in t for t in titles if "午餐" in t)
+        self.assertTrue(at_lunch or any("早茶" in u for u in plan.unmet_must_eat), (titles, plan.unmet_must_eat))
+
+    def test_morning_dish_at_lunch(self):
+        spot = _gz("沙面岛", 113.244707, 23.106802, 150)
+        dimsum = self._rest("点都德(沙面店)", 113.2452, 23.1072, dish="早茶")
+        other = self._rest("沙面西餐", 113.2449, 23.1071)
+        plan = TripScheduler("广州", 1, GZ_HOTEL, start_date="2026-10-22").schedule(
+            [spot], [dimsum, other], must_eat=["早茶"])
+        lunch = next(it.title for it in plan.days[0].items if "午餐" in it.title)
+        self.assertIn("点都德", lunch)
+
+
+class TestSplitPerformance(unittest.TestCase):
+    def test_ten_spots_with_evenings_under_two_seconds(self):
+        import time
+        spots = [_gz(f"景点{i}", 113.24 + 0.01 * i, 23.10 + 0.004 * (i % 5), 90,
+                     "evening" if i % 3 == 0 else "") for i in range(10)]
+        t0 = time.time()
+        TripScheduler("广州", 4, GZ_HOTEL, start_date="2026-10-22", pace="compact").schedule(spots, [])
+        self.assertLess(time.time() - t0, 2.0)
+
+
+class TestMustVisitKept(unittest.TestCase):
+    """广州「把陈家祠换成长隆」：5 个点 2 天放不下，旧版舍弃最远的长隆（用户点名要加的）。"""
+
+    def test_must_visit_spot_kept_over_extras(self):
+        changlong = Spot(name="长隆野生动物世界", lng=113.3260, lat=23.0010, duration_minutes=300,
+                         best_period="morning", open_time="09:30-18:00", must_visit=True)
+        spots = [changlong,
+                 _gz("广东省博物馆", 113.3270, 23.1150, 120), _gz("广州塔", 113.324521, 23.106428, 150, "evening"),
+                 _gz("沙面岛", 113.244707, 23.106802, 120), _gz("永庆坊", 113.2436, 23.1220, 120, "evening")]
+        plan = TripScheduler("广州", 2, GZ_HOTEL, start_date="2026-10-23").schedule(spots, [])
+        names = [it.location.name for _, it in _spot_items(plan)]
+        self.assertIn("长隆野生动物世界", names, plan.unassigned_spots)
+        self.assertLessEqual(len(plan.unassigned_spots), 1)  # 夜游不占白天预算后 5 个点可能全放下
+
+    def test_must_flag_parsed_from_ref(self):
+        from app._data.trip_input import to_spot
+        from app._data.poi_repo import PoiRecord
+        rec = PoiRecord(id="X", name="长隆", lng=113.3, lat=23.0)
+        self.assertTrue(to_spot(rec, {"id": "X", "must": True}, 120).must_visit)
+        self.assertFalse(to_spot(rec, {"id": "X"}, 120).must_visit)

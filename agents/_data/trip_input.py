@@ -52,6 +52,7 @@ def to_spot(rec: PoiRecord, ref: dict, default_duration: int) -> Spot:
         duration_minutes=_duration(ref.get("duration_minutes"), default_duration),
         open_time=rec.open_time, rating=rec.rating, cost=rec.cost, tags=list(rec.tags),
         best_period=period if period in ("morning", "evening") else "",
+        must_visit=ref.get("must") in (True, "true", "True", 1, "1"),
     )
 
 

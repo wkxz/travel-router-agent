@@ -111,7 +111,8 @@ class TestMustEat(unittest.TestCase):
     def test_pending_must_eat_beats_nearer_higher_rated(self):
         # 旧逻辑只给必吃 +3 分：近 0.2km、评分 4.9 的普通店会把 2km 外的必吃挤掉
         rs = [_rest("普通好店A", 1.2, rating=4.9), _rest("普通好店B", 1.3, rating=4.9),
-              _rest("鸭血粉丝老店", 3.0, dish="鸭血粉丝", rating=4.0)]
+              # 2.2km：晚餐绕路约 2km，在最后一顿 3km 的上限内（3km 外绕路 3.6km，按新规则交给缺口清单）
+              _rest("鸭血粉丝老店", 2.2, dish="鸭血粉丝", rating=4.0)]
         plan = self._plan(rs, ["鸭血粉丝"])
         self.assertTrue(any("鸭血粉丝老店" in t for t in self._titles(plan)), self._titles(plan))
         self.assertEqual(plan.unmet_must_eat, [])

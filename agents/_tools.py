@@ -62,8 +62,10 @@ def extract_plan(output: Any) -> Optional[dict]:
 def next_step(gaps: List[dict]) -> str:
     """把缺口清单翻译成模型可直接执行的一步：并行补检索，然后只重排一次。"""
     if not gaps:
-        return "行程已完整，直接回复用户，不要再调用 generate_trip_itinerary。"
-    meals = [g for g in gaps if g["type"] == "meal_without_candidate" and g.get("near_id")]
+        return ("行程已完整并通过可行性校验（时间、营业、通勤、闭馆都已核对），直接回复用户，"
+                "不要再调用 generate_trip_itinerary，也不要自行删减用户要求的景点；"
+                "若觉得某天偏满，在回复里给出建议，由用户决定是否调整。")
+    meals =[g for g in gaps if g["type"] == "meal_without_candidate" and g.get("near_id")]
     dishes = [g for g in gaps if g["type"] == "must_eat_unmet"]
     steps = []
     near_ids = list(dict.fromkeys(g["near_id"] for g in meals))
@@ -248,7 +250,8 @@ def generate_trip_itinerary(
     ctx: RunContextWrapper[TripContext],
     city: Annotated[str, "目的地城市或区县名称"],
     total_days: Annotated[int, "必填。游玩总天数，例如 2 或 3"] = 0,
-    spots: Annotated[str, "必填。要去的景点，JSON 列表，元素为搜索结果里的 id，或带判断信息的对象："
+    spots: Annotated[str, "必填。要去的景点，JSON 列表，元素为搜索结果里的 id，或带判断信息的对象（用户点名的景点加 \"must\": true，"
+                          "放不下时最后才舍弃；你自己补充推荐的景点不要加 must，最好放进 backup_spots）："
                           "{\"id\": \"...\", \"duration_minutes\": 180, \"best_period\": \"morning\"}；"
                           "best_period 可选 'morning'(宜早去，如动物园/早市/观日出/登山) | 'evening'(宜傍晚夜间，如古街夜景/夜市街区/灯光秀)"] = "",
     foods: Annotated[str, "必填。餐饮候选，JSON 列表，元素为 search_food_and_snacks 返回的 id；"
