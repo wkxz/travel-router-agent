@@ -35,10 +35,10 @@ CASES = [
 ]
 
 
-async def run_turn(message, session):
+async def run_turn(message, session, cid):
     rec = {"message": message, "tools": [], "plans": [], "text": "", "error": None}
     t0 = time.time()
-    result = Runner.run_streamed(chat.agent, input=message, session=session, context=TripContext(),
+    result = Runner.run_streamed(chat.agent, input=message, session=session, context=chat.context_for(cid),  # 与线上一致：同一会话共享 POI 缓存
                                  max_turns=chat.MAX_TURNS)
     pending = {}
     try:
@@ -74,7 +74,7 @@ async def main(out_dir, ids):
         session = SQLiteSession(cid)  # 内存会话，多轮用例共享上下文
         recs = []
         for msg in turns:
-            recs.append(await run_turn(msg, session))
+            recs.append(await run_turn(msg, session, cid))
             print(f"[{cid}] {recs[-1]['seconds']}s tools={len(recs[-1]['tools'])} plans={len(recs[-1]['plans'])} "
                   f"err={recs[-1]['error']}", flush=True)
         json.dump({"id": cid, "turns": recs}, open(f"{out_dir}/{cid}.json", "w"), ensure_ascii=False, indent=1)

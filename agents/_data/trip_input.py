@@ -83,6 +83,7 @@ class TripInputs:
     hotel: Optional[LocationPoint] = None
     departure: Optional[LocationPoint] = None
     skipped: List[str] = field(default_factory=list)  # 「id（原因）」，并入「未安排」告知用户
+    notes: List[str] = field(default_factory=list)  # 需要告知用户的候选过滤说明（忌口 / 预算）
 
 
 def _place(repo: PoiRepo, poi_id: str, label: str) -> Tuple[Optional[LocationPoint], str]:
@@ -102,9 +103,14 @@ def build_trip_inputs(
     hotel_id: str = "",
     departure_id: str = "",
     must_eat: str = "",
+    avoid: str = "",
+    max_cost_per_meal: Optional[float] = None,
 ) -> TripInputs:
     """解析各类 id 引用。住宿/返程地点无法识别时抛 ValueError（这类错误会改变整份行程，不能静默忽略）；
-    单个景点/餐厅识别失败只记入 skipped。"""
+    单个景点/餐厅识别失败只记入 skipped。
+
+    avoid / max_cost_per_meal：忌口关键词与人均上限，在这里确定性地过滤餐饮候选，
+    不再依赖模型自己挑（实测模型为凑「不吃辣、人均 80」反复删候选重排了 5 次）。"""
     out = TripInputs()
     out.hotel, err = _place(repo, hotel_id, "住宿地点")
     if err:
@@ -129,10 +135,31 @@ def build_trip_inputs(
             seen.add(rec.id)
             out.backups.append(to_spot(rec, ref, default_duration=60))
 
+    avoid_words = split_must_eat(avoid)
+    by_diet, by_cost, unknown_cost = [], [], 0
     food_seen = set()
     for ref in parse_refs(foods):
         rec, _ = repo.get(ref["id"])  # 餐厅只是候选，识别失败不影响行程，忽略即可
-        if rec and rec.id not in food_seen:
-            food_seen.add(rec.id)
-            out.restaurants.append(to_restaurant(rec, ref, dishes))
+        if not rec or rec.id in food_seen:
+            continue
+        food_seen.add(rec.id)
+        r = to_restaurant(rec, ref, dishes)
+        hit = next((w for w in avoid_words if w in f"{r.name} {r.category} {rec.search_keyword}"), "")
+        if hit and not r.dish_key:  # 用户点名的必吃不受忌口过滤
+            by_diet.append(f"{r.name}（{hit}）")
+            continue
+        if max_cost_per_meal is not None and r.cost is not None and r.cost > max_cost_per_meal:
+            by_cost.append(f"{r.name}（人均 ¥{r.cost:.0f}）")
+            continue
+        if max_cost_per_meal is not None and r.cost is None:
+            unknown_cost += 1
+        out.restaurants.append(r)
+    if by_diet:
+        out.notes.append(f"按忌口（{'、'.join(avoid_words)}）排除了 {len(by_diet)} 家候选餐厅："
+                         + "、".join(by_diet[:5]) + ("等" if len(by_diet) > 5 else "") + "。")
+    if by_cost:
+        out.notes.append(f"按人均 ¥{max_cost_per_meal:.0f} 以内排除了 {len(by_cost)} 家："
+                         + "、".join(by_cost[:5]) + ("等" if len(by_cost) > 5 else "") + "。")
+    if unknown_cost:
+        out.notes.append(f"有 {unknown_cost} 家候选没有人均数据，无法确认是否在预算内，已保留并标注。")
     return out

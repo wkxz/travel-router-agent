@@ -84,5 +84,6 @@ class FullTripPlan:
     days: List[DayItinerary] = field(default_factory=list)
     unassigned_spots: List[str] = field(default_factory=list)  # 「名称（未安排原因）」
     unmet_must_eat: List[str] = field(default_factory=list)  # 「美食（没排进行程的原因）」
+    gaps: List[Dict[str, Any]] = field(default_factory=list)  # 给模型的结构化缺口清单（缺候选的饭点等），不展示给用户
     summary: str = ""
     departure_min: Optional[int] = None  # 返程车次/航班时刻（当日分钟数），校验到站缓冲用

@@ -54,6 +54,8 @@ STATION_BUFFER = 60           # 提前到站/机场的最少缓冲
 MAX_MEAL_DIST_KM = 2.5        # 餐厅离当前位置的直线距离上限，超过宁可「周边自选」也不绕路
 REPEAT_CUISINE_PENALTY = 6.0  # 同一菜系已吃过一次后的降权
 FAST_FOOD_MEAL_PENALTY = 4.0  # 正餐时段降权高德分类为「快餐厅」的店；附近只有它时仍可选
+PRICEY_THRESHOLD = 150        # 用户没给预算时，人均超过这个数的店按超出部分降权（实测曾选中人均 ¥331 / ¥406 的店）
+PRICEY_PENALTY_PER_100 = 1.5  # 每超出 ¥100 扣的分，约等于评分低 1 分
 MUST_EAT_BONUS = 3.0          # 用户点名的必吃美食还没吃到时的加分
 ON_THE_WAY_KM = 1.0           # 比直接去下一站多走不超过 1km 的餐厅算「顺路」，即使离当前位置超过 MAX_MEAL_DIST_KM
 MUST_EAT_MAX_DETOUR_KM = 1.0  # 必吃在绕路不超过这个距离时强制优先；更远的留给更顺路的饭点（最后一顿除外）。
@@ -126,7 +128,9 @@ class TripScheduler:
         pace: str = "balanced",
         departure_time: Optional[str] = None,  # 返程车次/航班时间 "HH:MM"
         travel: Optional[TravelTimes] = None,  # 通勤数据源；默认按直线距离估算，工具层注入高德路网
+        price_sensitive: bool = True,  # 用户没给预算时为 True：对高价店降权；给了人均上限（已在输入层过滤）时为 False
     ):
+        self.price_sensitive = price_sensitive
         self.city = city
         self.travel = travel or TravelTimes()
         self.total_days = max(1, total_days)
@@ -212,8 +216,10 @@ class TripScheduler:
             repeat_penalty = REPEAT_CUISINE_PENALTY if used_cuisines and key and key in used_cuisines else 0.0
             must_eat_bonus = MUST_EAT_BONUS if r.dish_key else 0.0  # 已吃过的必吃项在上面已被排除
             fast_food = FAST_FOOD_MEAL_PENALTY if "meal" in meal_types and "快餐厅" in r.category else 0.0
+            pricey = (PRICEY_PENALTY_PER_100 * max(0.0, r.cost - PRICEY_THRESHOLD) / 100
+                      if self.price_sensitive and r.cost is not None else 0.0)
             return ((r.rating if r.rating is not None else 4.0) * 1.5 - dist * 2.0
-                    + open_bonus + type_bonus - repeat_penalty + must_eat_bonus - fast_food)
+                    + open_bonus + type_bonus - repeat_penalty + must_eat_bonus - fast_food - pricey)
 
         # 还没吃到的必吃优先：只靠加分时，评分高又更近的普通餐厅会把它挤掉；但不顺路时不强求，避免专程折返
         def prioritized(r: Restaurant) -> bool:
@@ -298,6 +304,7 @@ class TripScheduler:
         used_cuisines: set = set()
         day_plans: List[DayItinerary] = []
         evening_ok = self._evening_ok()
+        meal_gaps: List[dict] = []
 
         for day_idx in range(self.total_days):
             curr_date = self.start_date + timedelta(days=day_idx)
@@ -344,6 +351,7 @@ class TripScheduler:
             day.finish()
 
             day_plans.append(day.build())
+            meal_gaps += day.gaps
 
         summary_text = (
             f"为您规划了 {self.city} {self.total_days} 天行程，"
@@ -360,15 +368,25 @@ class TripScheduler:
             days=day_plans,
             unassigned_spots=[f"{name}（{reason}）" for name, reason in unassigned.items()],
             unmet_must_eat=self._unmet_must_eat(must_eat or [], restaurants, day_plans, used_cuisines),
+            gaps=meal_gaps,
             summary=summary_text,
             departure_min=self.departure_min if self.departure_point else None,
         )
         # 排程与校验分开实现：排程逻辑有漏洞时，由校验器拦下，绝不输出走不通的行程
+        plan.gaps += self._must_eat_gaps(plan, day_plans)
         errors = [i for i in validate_plan(plan, station_buffer=STATION_BUFFER, travel=self.travel)
                   if i.level == "error"]
         if errors:
             raise InfeasiblePlanError(errors)
         return plan
+
+    @staticmethod
+    def _must_eat_gaps(plan: FullTripPlan, day_plans: List[DayItinerary]) -> List[dict]:
+        """没排上的必吃：给出行程里各景点的 id，模型可直接在这些景点附近按美食名检索。"""
+        spot_ids = [it.location.poi_id for d in day_plans for it in d.items
+                    if it.category == "spot" and it.location and it.location.poi_id]
+        return [{"type": "must_eat_unmet", "dish": u.split("（", 1)[0], "reason": u,
+                 "near_ids": spot_ids} for u in plan.unmet_must_eat]
 
     def _unmet_must_eat(self, must_eat: List[str], restaurants: List[Restaurant],
                         day_plans: List[DayItinerary], eaten: set) -> List[str]:
@@ -409,6 +427,7 @@ class _DayBuilder:
         self.reserved_spots = 0
         self.evening_ok = True  # 当天晚上能否夜游（返程日赶车时为 False）
         self.demoted: set = set()  # 宜傍晚但改为白天游的景点名
+        self.gaps: List[dict] = []  # 缺候选的饭点，汇总进 plan.gaps 供模型一次性补检索
         self.end_target: LocationPoint = sched.hotel  # 当天最后要去的地方，挑餐厅时据此判断顺不顺路
         self.free_start = 0
         self.day_num = day_num
@@ -707,6 +726,10 @@ class _DayBuilder:
             self.dist += road_km
             self.loc = rest
         elif placeholder:
+            self.gaps.append({
+                "type": "meal_without_candidate", "day": self.day_num, "meal": label,
+                "near": self.loc.name, "near_id": self.loc.poi_id,
+            })
             self.items.append(ScheduleItem(
                 time_slot=f"{minutes_to_hhmm(start)} - {minutes_to_hhmm(end)}",
                 category=category,

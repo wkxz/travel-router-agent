@@ -16,6 +16,8 @@ from typing import Any, AsyncGenerator
 import asyncio
 import json
 import os
+import threading
+from collections import OrderedDict
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -23,7 +25,7 @@ from openai.types.responses import ResponseTextDeltaEvent
 from agents import Agent, MaxTurnsExceeded, OpenAIChatCompletionsModel, Runner
 
 from .._logger import create_logger
-from .._data.poi_repo import TripContext
+from .._data.poi_repo import PoiRepo, TripContext
 from .._tools import (
     extract_plan,
     geocode_location,
@@ -120,22 +122,28 @@ AGENT_INSTRUCTIONS = f"""你是一位严谨的旅游路线规划与美食向导�
    - 所有地点都用工具返回的 id 引用，你拿不到也不需要坐标；不要自己编造 id。
    - get_city_weather 查天气。
    - 用户指定的景点用 search_scenic_spots 查出 id 与营业信息；用户没指定时，按目的地特色检索代表性景点。
-   - 对【每一个】景点，都用 search_food_and_snacks(meal_type="meal", near_id=该景点 id) 检索周边正餐；
-     排程算法只会选 2.5 公里以内的餐厅，漏搜某个景点，那里就只能显示「周边自选」。
-   - 用户点名的必吃美食，用该美食名作为 keywords 检索（如用户说想吃 X，就 keywords="X"）；特色小吃用 meal_type="snack"。
+   - 餐饮检索一次做全、并行调用（之后不要为了换几家店反复检索重排）：
+     · 对【每一个】景点各调用一次 search_food_and_snacks(keywords="美食", meal_type="meal", near_id=该景点 id)；
+       keywords 用「美食」或菜系词，不要用「正餐」「午餐」（高德按店名匹配，实测返回 0 条）；
+     · 用户点名的每样必吃，用该美食名作 keywords 检索一次（near_id 选行程中最相关的景点）；
+     · 再在主要游览片区用 keywords="特色小吃"、meal_type="snack" 检索一次。
    - 用户提到住宿地、返程车站/机场时，用 geocode_location 查出 id。
 3. 生成行程（必须调用 generate_trip_itinerary）：
    - spots 传景点 id 列表；可按景点性质附上 duration_minutes 与 best_period。foods 传检索到的餐饮 id 列表。
-   - must_eat 传入用户点名的美食（逗号分隔）。算法会优先安排且全程只排一次，你不需要再处理去重。
-   - 返回的 plan.unmet_must_eat 非空时，说明有必吃没排进行程：按其中的原因补救——没检索过的，用该美食名检索；
-     离路线太远的，用行程中景点的 id 作 near_id 在景点附近重新检索；然后重新调用 generate_trip_itinerary。
-     补救一次仍排不进，就把原因如实告诉用户，不要在文字里自行补一家店。
+   - must_eat 只填用户原话里点名的菜（逗号分隔），不要自己补充「当地必吃」；用户没点名就留空。
+     算法会优先安排且全程只排一次，你不需要再处理去重。
+   - 忌口与预算交给参数，不要靠删减 foods 来凑：用户说的忌口填 avoid，人均预算填 max_cost_per_meal。
+   - 工具返回 gaps 非空时，严格按 next_step 并行补检索，然后只重新调用一次 generate_trip_itinerary；
+     之后仍有「周边自选」或没排上的必吃，就接受并在回复里如实说明原因，不要再重排、也不要在文字里自行补一家店。
+     gaps 为空时不要重排。
    - 有出行日期就传 start_date（用于闭馆校验），日期一律按上方【当前日期】推算；用户没说出行日期时不传，
      算法按今天起算，并在回复中说明「按今天出发排的，闭馆日按此核对」。
    - 有返程信息就传 departure_id、departure_time；用户说了节奏就传 pace。
    - 用户没说住宿位置时，hotel_id 留空，并在回复中请用户补充。
    - 可通过 backup_spots 额外提供 2~4 个各片区附近的轻量备选景点 id（公园、街区、小型展馆等），算法只在出现 1 小时以上空档且顺路时才加入。
    - 觉得行程需要调整时，修改参数后重新调用 generate_trip_itinerary，而不是在文字里另写一套时间或顺序。
+   - 用户要求修改（如「把 A 换成 B」）时，只改用户要求的部分，其余景点、日期、偏好保持不变；
+     如果为了放下新景点不得不删掉其他景点，必须在回复里明确告诉用户删了哪些、为什么。
    - 工具返回 success=false 时，把 error 里的原因如实告诉用户（例如返程时间过早），不要自行编排行程。
 4. 回复用户：
    - 行程表由系统直接展示在你的回复上方。不要复述、改写或重新排版行程表，也不要另列每天的时间安排。
@@ -174,6 +182,26 @@ agent = Agent(
 )
 
 
+# ========== 会话级 POI 缓存 ==========
+# 多轮对话（如「把第二天的 A 换成 B」）会引用上一轮检索到的 id。每轮新建空仓库时，这些 id 要逐个调
+# /place/detail 回查（受 0.35s 节流），实测第二轮 96~112 秒。按会话缓存后直接命中；
+# 只存在本进程内存里，换实例或重启后未命中会自动回查高德，结果不变，只是慢一些。
+_REPO_CACHE_MAX = 200
+_repo_cache: "OrderedDict[str, PoiRepo]" = OrderedDict()
+_repo_cache_lock = threading.Lock()
+
+
+def context_for(conversation_id: str | None) -> TripContext:
+    if not conversation_id:
+        return TripContext()
+    with _repo_cache_lock:
+        repo = _repo_cache.pop(conversation_id, None) or PoiRepo()
+        _repo_cache[conversation_id] = repo  # 移到末尾：最近使用
+        while len(_repo_cache) > _REPO_CACHE_MAX:
+            _repo_cache.popitem(last=False)
+    return TripContext(repo=repo)
+
+
 # ========== SSE Helper ==========
 def sse_event(event: str, data: dict) -> str:
     """Format a single SSE event."""
@@ -185,9 +213,10 @@ async def _event_stream(
     message: str,
     session=None,
     cancel_signal: asyncio.Event | None = None,
+    conversation_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
-    # 每个请求一份 POI 仓库：工具间共享检索结果，并发请求互不干扰
-    result = Runner.run_streamed(agent, input=message, session=session, context=TripContext(),
+    # 同一会话共享一份 POI 仓库（多轮引用上一轮的 id 不必回查）；不同会话互不干扰
+    result = Runner.run_streamed(agent, input=message, session=session, context=context_for(conversation_id),
                                  max_turns=MAX_TURNS)
 
     async for event in result.stream_events():
@@ -262,7 +291,7 @@ async def handler(context: Any) -> AsyncGenerator[str, None]:
     stopped = False
 
     try:
-        async for frame in _event_stream(message, session, cancel_signal):
+        async for frame in _event_stream(message, session, cancel_signal, conversation_id=cid):
             if cancel_signal and cancel_signal.is_set():
                 stopped = True
                 break

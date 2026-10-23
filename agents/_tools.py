@@ -15,7 +15,7 @@ from typing import Annotated, Any, Dict, List, Optional
 from agents import RunContextWrapper, function_tool
 
 from ._logger import create_logger
-from ._data.amap import amap_get
+from ._data.amap import amap_get, redact_secrets
 from ._data.poi_repo import PoiRepo, TripContext, geocode, record_from_poi
 from ._data.routing import AmapTravel
 from ._data.trip_input import build_trip_inputs, split_must_eat
@@ -25,6 +25,22 @@ from .engine.renderer import PLAN_KIND
 logger = create_logger("tools")
 
 DISPLAY_NOTE = "行程表已由系统直接展示给用户，回复中不要复述或改写行程表。"
+
+
+def tool_error(ctx: RunContextWrapper, error: Exception) -> str:
+    """工具调用失败（多为参数校验没通过）时告诉模型具体原因，而不是 SDK 默认的「出错了请重试」。
+
+    实测：模型漏传必填的 total_days，只收到默认提示，只能盲猜重试。错误文本先脱敏，绝不带出密钥。
+    """
+    detail = f"{type(error).__name__}: {error}"
+    if error.__cause__ is not None:  # SDK 的参数校验错误把具体字段（如缺 total_days）放在 __cause__ 里
+        detail += f" | {type(error.__cause__).__name__}: {error.__cause__}"
+    if str(error).startswith("Invalid JSON input") and error.__cause__ is None:
+        # SDK 默认不记录工具参数（DONT_LOG_TOOL_DATA），校验细节被丢掉了，只能给出通用核对清单
+        detail += "（参数不是合法 JSON，或某个参数类型不对：数字要传数字，id 列表要传 JSON 字符串）"
+    detail = redact_secrets(detail)
+    logger.error(f"[tool-error] {detail[:500]}")
+    return _dumps({"success": False, "error": "工具调用失败，请按提示修正参数后重试一次：" + detail[:800]})
 
 
 def extract_plan(output: Any) -> Optional[dict]:
@@ -42,6 +58,26 @@ def extract_plan(output: Any) -> Optional[dict]:
         return None
     plan = output.get("plan")
     return plan if isinstance(plan, dict) and plan.get("kind") == PLAN_KIND else None
+
+def next_step(gaps: List[dict]) -> str:
+    """把缺口清单翻译成模型可直接执行的一步：并行补检索，然后只重排一次。"""
+    if not gaps:
+        return "行程已完整，直接回复用户，不要再调用 generate_trip_itinerary。"
+    meals = [g for g in gaps if g["type"] == "meal_without_candidate" and g.get("near_id")]
+    dishes = [g for g in gaps if g["type"] == "must_eat_unmet"]
+    steps = []
+    near_ids = list(dict.fromkeys(g["near_id"] for g in meals))
+    if near_ids:
+        steps.append("对这些地点各调用一次 search_food_and_snacks(keywords='美食', meal_type='meal', near_id=…)："
+                     + "、".join(near_ids))
+    for g in dishes:
+        steps.append(f"必吃「{g['dish']}」：在行程景点附近用 keywords='{g['dish']}' 检索"
+                     f"（near_id 任选：{'、'.join(g['near_ids'][:3]) or '住宿地 id'}）")
+    if not steps:
+        return "缺口所在位置没有可检索的 id，接受「周边自选」，直接回复用户。"
+    return ("并行完成以下检索后，把新 id 加进 foods 重新调用 generate_trip_itinerary（只重排这一次；"
+            "之后仍有「周边自选」就接受，直接回复用户）：" + "；".join(steps))
+
 
 # 风景名胜 + 科教文化（实测：博物馆属于 140000，只传 110000 搜「南京博物院」会返回阅江楼）
 SPOT_TYPES = "110000|140000"
@@ -92,7 +128,7 @@ def _search(ctx: RunContextWrapper, *, city: str, keywords: str, types: str, nea
 
 
 # ========== Tool 1: 地理编码 ==========
-@function_tool
+@function_tool(failure_error_function=tool_error)
 def geocode_location(
     ctx: RunContextWrapper[TripContext],
     address: Annotated[str, "地点、酒店或车站名称，尽量带上所在城市或区县，例如「某市某某广场」"],
@@ -111,7 +147,7 @@ def geocode_location(
 
 
 # ========== Tool 2: 城市天气预报 ==========
-@function_tool
+@function_tool(failure_error_function=tool_error)
 def get_city_weather(
     city: Annotated[str, "城市或区县名称（地级市、县、县级市均可）"],
 ) -> str:
@@ -160,7 +196,7 @@ def get_city_weather(
 
 
 # ========== Tool 3: 景点检索 ==========
-@function_tool
+@function_tool(failure_error_function=tool_error)
 def search_scenic_spots(
     ctx: RunContextWrapper[TripContext],
     city: Annotated[str, "城市或区县名"],
@@ -182,11 +218,12 @@ def search_scenic_spots(
 
 
 # ========== Tool 4: 餐饮与特色小吃检索 ==========
-@function_tool
+@function_tool(failure_error_function=tool_error)
 def search_food_and_snacks(
     ctx: RunContextWrapper[TripContext],
     city: Annotated[str, "城市或区县名"],
-    keywords: Annotated[str, "美食关键词：用户点名的菜名或店名，或品类词如「特色小吃」「本地菜」「面馆」"],
+    keywords: Annotated[str, "美食关键词：用户点名的菜名或店名，或品类词如「美食」「特色小吃」「本地菜」「面馆」。"
+                             "高德按店名/品类匹配，不要用「正餐」「午餐」这类词（实测返回 0 条）"],
     near_id: Annotated[str, "景点 id：检索该景点 4 公里内的餐饮，实现就近用餐；切忌只用住宿地 id，会造成来回折返"] = "",
     meal_type: Annotated[str, "餐饮类型：'meal'(正餐) | 'snack'(特色小吃) | 'night_market'(夜市/小吃街)"] = "meal",
 ) -> str:
@@ -206,16 +243,16 @@ def search_food_and_snacks(
 
 
 # ========== Tool 5: 确定性路线排程引擎 ==========
-@function_tool
+@function_tool(failure_error_function=tool_error)
 def generate_trip_itinerary(
     ctx: RunContextWrapper[TripContext],
     city: Annotated[str, "目的地城市或区县名称"],
-    total_days: Annotated[int, "游玩总天数，例如 2 或 3"],
-    spots: Annotated[str, "要去的景点，JSON 列表，元素为搜索结果里的 id，或带判断信息的对象："
+    total_days: Annotated[int, "必填。游玩总天数，例如 2 或 3"] = 0,
+    spots: Annotated[str, "必填。要去的景点，JSON 列表，元素为搜索结果里的 id，或带判断信息的对象："
                           "{\"id\": \"...\", \"duration_minutes\": 180, \"best_period\": \"morning\"}；"
-                          "best_period 可选 'morning'(宜早去，如动物园/早市/观日出/登山) | 'evening'(宜傍晚夜间，如古街夜景/夜市街区/灯光秀)"],
-    foods: Annotated[str, "餐饮候选，JSON 列表，元素为 search_food_and_snacks 返回的 id；"
-                          "如需改变类型可写成 {\"id\": \"...\", \"meal_type\": \"snack\"}"],
+                          "best_period 可选 'morning'(宜早去，如动物园/早市/观日出/登山) | 'evening'(宜傍晚夜间，如古街夜景/夜市街区/灯光秀)"] = "",
+    foods: Annotated[str, "必填。餐饮候选，JSON 列表，元素为 search_food_and_snacks 返回的 id；"
+                          "如需改变类型可写成 {\"id\": \"...\", \"meal_type\": \"snack\"}"] = "",
     hotel_id: Annotated[str, "住宿地 id（geocode_location 或搜索结果）；用户未说明住宿时留空，算法会按景点中心估算"] = "",
     departure_id: Annotated[str, "返程火车站或机场的 id（geocode_location 返回）；用户未说明可留空"] = "",
     start_date: Annotated[str, "出行起始日期 'YYYY-MM-DD'，用于自动核验闭馆日"] = "",
@@ -225,16 +262,29 @@ def generate_trip_itinerary(
                              "算法优先安排、全程只排一次；排不进的会在 plan.unmet_must_eat 里说明原因。用户没点名就留空"] = "",
     backup_spots: Annotated[str, "可选。备选景点 id 的 JSON 列表（格式同 spots），如各片区附近的公园、街区、小型博物馆；"
                                  "算法只在某天出现 1 小时以上空档且顺路时才加入，用不上不会出现在行程里"] = "",
+    avoid: Annotated[str, "忌口关键词，逗号分隔，含这些词的餐厅（店名/品类）会被排除。只按用户明确说的忌口填，"
+                          "如不吃辣可填「辣,麻辣,火锅,串串,冒菜,香锅,干锅,钵钵鸡」；没有忌口留空"] = "",
+    max_cost_per_meal: Annotated[float, "每餐人均上限（元），超过的餐厅会被排除；用户没说预算填 0"] = 0,
 ) -> str:
     """调用纯 Python 排程算法，生成不折返、按天切分、带双轨餐饮（正餐+特色小吃/夜市）的完整行程。
 
     必须在用搜索工具拿到景点与餐饮 id 之后调用。只传 id，不要传名称或坐标。
     LLM 不应手写行程表，必须通过本工具生成严谨可行的行程。
-    通勤时间取自高德步行/驾车路网；返回的 plan.unmet_must_eat 非空时，说明有必吃没排进行程及原因。
+    通勤时间取自高德步行/驾车路网。返回的 gaps 是需要补救的缺口（缺候选的饭点、没排上的必吃），
+    next_step 给出一次性补齐的做法；gaps 为空时不要再重排。
     """
+    # 必填项由这里检查并给出具体提示：SDK 参数校验失败时只回「Invalid JSON input」，不说缺了什么
+    missing = [name for name, ok in (("total_days（游玩天数，正整数）", total_days and total_days >= 1),
+                                     ("spots（景点 id 列表）", bool((spots or "").strip())),
+                                     ("foods（餐饮 id 列表，可为 []）", foods is not None and foods != ""))
+               if not ok]
+    if missing:
+        return _dumps({"success": False, "error": "缺少必填参数：" + "、".join(missing) + "。补齐后重新调用。"})
     try:
+        budget = max_cost_per_meal if max_cost_per_meal and max_cost_per_meal > 0 else None
         inputs = build_trip_inputs(_repo(ctx), spots, foods, backup_spots,
-                                   hotel_id=hotel_id, departure_id=departure_id, must_eat=must_eat)
+                                   hotel_id=hotel_id, departure_id=departure_id, must_eat=must_eat,
+                                   avoid=avoid, max_cost_per_meal=budget)
         points = [p for p in (inputs.hotel, inputs.departure) if p]
         points += inputs.spots + inputs.backups + inputs.restaurants
         travel = AmapTravel(points, fetch=amap_get)
@@ -247,9 +297,12 @@ def generate_trip_itinerary(
             pace=pace,
             departure_time=departure_time or None,
             travel=travel,
+            price_sensitive=budget is None,
         )
+        scheduler.notes.extend(inputs.notes)
         logger.log("[itinerary-input] " + _dumps({
             "city": city, "days": total_days, "pace": pace, "hotel": hotel_id, "must_eat": must_eat,
+            "avoid": avoid, "max_cost": budget,
             "departure": [departure_id, departure_time],
             "spots": [[s.poi_id, s.name, s.duration_minutes, s.best_period] for s in inputs.spots],
             "backups": [b.poi_id for b in inputs.backups],
@@ -259,7 +312,8 @@ def generate_trip_itinerary(
                                   must_eat=split_must_eat(must_eat))
         logger.log(f"[itinerary-routing] amap /distance requests={travel.requests}")
         plan.unassigned_spots.extend(inputs.skipped)
-        return _dumps({"success": True, "display": DISPLAY_NOTE, "plan": render_dict(plan)})
+        return _dumps({"success": True, "display": DISPLAY_NOTE, "plan": render_dict(plan),
+                       "gaps": plan.gaps, "next_step": next_step(plan.gaps)})
     except json.JSONDecodeError as e:
         return _dumps({"success": False, "error": f"spots / foods 参数不是合法的 JSON：{e}"})
     except ValueError as e:

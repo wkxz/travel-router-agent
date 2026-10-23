@@ -28,6 +28,18 @@ def is_qps_error(data: dict) -> bool:
     return str(data.get("infocode")) in QPS_CODES or "QPS_HAS_EXCEEDED" in str(data.get("info"))
 
 
+SECRET_ENV_VARS = ("AMAP_API_KEY", "AI_GATEWAY_API_KEY")
+
+
+def redact_secrets(text: str) -> str:
+    """把错误文本里出现的密钥值替换成 ***。所有要返回给模型或写进日志的错误文本都先过这一步。"""
+    for name in SECRET_ENV_VARS:
+        value = os.getenv(name)
+        if value and len(value) >= 6:
+            text = text.replace(value, "***")
+    return text
+
+
 def _throttle() -> None:
     """全局最小请求间隔，避免高德并发超限。"""
     global _last_call_at
@@ -55,8 +67,13 @@ def amap_get(path: str, params: dict, retries: int = 3) -> dict:
             )
             resp.raise_for_status()
             data = resp.json()
+        except httpx.HTTPStatusError as e:
+            # 不能带 str(e)：httpx 的异常文本含完整 URL，URL 里有 key=AMAP_API_KEY（实测）
+            last_error = f"高德接口网络请求失败：HTTP {e.response.status_code}"
+            time.sleep(0.6 * (attempt + 1))
+            continue
         except httpx.HTTPError as e:
-            last_error = f"高德接口网络请求失败：{type(e).__name__}: {e}"
+            last_error = redact_secrets(f"高德接口网络请求失败：{type(e).__name__}: {e}")
             time.sleep(0.6 * (attempt + 1))
             continue
         except ValueError:

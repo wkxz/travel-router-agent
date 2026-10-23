@@ -80,7 +80,7 @@ def main(d):
                 print(f"   gen: days={a.get('total_days')} start={a.get('start_date')!r} pace={a.get('pace')!r} "
                       f"dep={a.get('departure_id')!r}@{a.get('departure_time')!r} must_eat={a.get('must_eat')!r} "
                       f"n_spots={len(json.loads(a.get('spots') or '[]'))} n_foods={len(json.loads(a.get('foods') or '[]'))} "
-                      f"backups={len(json.loads(a.get('backup_spots') or '[]'))} success={ok.get('success')} {ok.get('error', '')[:120]}")
+                      f"backups={len(json.loads(a.get('backup_spots') or '[]'))} avoid={a.get('avoid')!r} max_cost={a.get('max_cost_per_meal')!r} gaps={len(ok.get('gaps') or [])} success={ok.get('success')} {ok.get('error', '')[:120]}")
             failed_search = [(c["tool"], json.loads(c["args"]).get("keywords"), (c.get("output") or "")[:80])
                              for c in t["tools"] if c["tool"].startswith("search") and ('"count": 0' in (c.get("output") or "") or '"error"' in (c.get("output") or ""))]
             if failed_search:
