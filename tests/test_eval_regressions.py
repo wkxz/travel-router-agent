@@ -307,3 +307,39 @@ class TestMustVisitKept(unittest.TestCase):
         rec = PoiRecord(id="X", name="长隆", lng=113.3, lat=23.0)
         self.assertTrue(to_spot(rec, {"id": "X", "must": True}, 120).must_visit)
         self.assertFalse(to_spot(rec, {"id": "X"}, 120).must_visit)
+
+
+# ---------- 第七轮测评：分天时不看营业时段 ----------
+
+class TestOpeningHoursInDaySplit(unittest.TestCase):
+    """分天只看总时长，不看几点开门/关门：13:00 才开的被排在上午、17:00 关门的被排到下午晚些，都成了「未安排」。"""
+
+    SH_HOTEL = LocationPoint(name="人民广场", lng=121.4737, lat=31.2304)
+
+    def _sh(self, name, lng, lat, minutes, open_time="周一至周日 00:00-24:00", period=""):
+        return Spot(name=name, lng=lng, lat=lat, duration_minutes=minutes, open_time=open_time, best_period=period)
+
+    def test_afternoon_only_spot_goes_to_afternoon(self):
+        spots = [
+            self._sh("田子坊艺术中心", 121.4669, 31.2101, 90, "周一至周日 13:00-18:00"),
+            self._sh("武康路", 121.4381, 31.2056, 120),
+            self._sh("豫园", 121.4920, 31.2272, 120, "周二至周日 09:00-16:30"),
+        ]
+        plan = TripScheduler("上海", 1, self.SH_HOTEL, start_date="2026-10-24", pace="balanced").schedule(spots, [])
+        self.assertEqual(plan.unassigned_spots, [])
+        item = next(it for _, it in _spot_items(plan) if it.location.name == "田子坊艺术中心")
+        self.assertGreaterEqual(int(item.time_slot[:2]), 13, item.time_slot)
+
+    def test_early_closing_spot_goes_first(self):
+        spots = [
+            self._sh("长时景点", 121.4920, 31.2272, 240),
+            self._sh("早关门", 121.4762, 31.2353, 120, "周一至周日 08:00-13:00"),
+        ]
+        plan = TripScheduler("上海", 1, self.SH_HOTEL, start_date="2026-10-24").schedule(spots, [])
+        self.assertEqual(plan.unassigned_spots, [])
+
+    def test_impossible_hours_not_forced(self):
+        """开放时段比游玩时长还短：怎么排都放不下，如实列为未安排而不是硬塞。"""
+        spots = [self._sh("只开一小时", 121.4762, 31.2353, 120, "周一至周日 10:00-11:00")]
+        plan = TripScheduler("上海", 1, self.SH_HOTEL, start_date="2026-10-24").schedule(spots, [])
+        self.assertEqual(len(plan.unassigned_spots), 1)

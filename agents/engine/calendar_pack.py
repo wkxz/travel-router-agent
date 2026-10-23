@@ -5,6 +5,7 @@ from typing import Dict, List, Tuple, Optional
 from .models import LocationPoint, Spot
 from .optimizer import optimize_spots_route
 from .geo import cluster_spots_spatially, estimate_transit, haversine_distance
+from .timeline import day_is_feasible
 
 # 默认闭馆规则：常见特大博物馆逢周一闭馆
 MONDAY_CLOSED_KEYWORDS = ["博物馆", "博物院", "纪念馆", "美术馆", "科技馆"]
@@ -131,18 +132,31 @@ def _leg(a, b) -> int:
     return estimate_transit(haversine_distance(a.lng, a.lat, b.lng, b.lat))[0]
 
 
-def _route_with_night(hotel: LocationPoint, spots: List[Spot], night: set) -> Tuple[List[Spot], int]:
-    """night（景点 id 集合）里的放在最后（晚上），宜早去的放最前，其余在中间；穷举出最短的往返顺序。"""
-    best, best_cost = list(spots), None
+def _safe_leg(a, b) -> float:
+    return _leg(a, b) * FEASIBILITY_TRAVEL_FACTOR
+
+
+def _route_with_night(hotel: LocationPoint, spots: List[Spot], night: set) -> Tuple[List[Spot], int, bool]:
+    """night（景点 id 集合）里的放在最后（晚上），宜早去的放最前，其余在中间。
+
+    返回 (顺序, 往返通勤分钟, 时间上是否走得通)：在营业时间都对得上的顺序里取最短的；
+    一个也走不通时返回最短顺序并标记 False（上海用例：田子坊艺术中心 13:00 才开，排在上午就放不下）。
+    """
+    routes = []
     for perm in itertools.permutations(spots):
         ranks = [2 if id(s) in night else 0 if s.best_period == "morning" else 1 for s in perm]
         if ranks != sorted(ranks):
             continue
         pts = [hotel, *perm, hotel]
-        cost = sum(_leg(a, b) for a, b in zip(pts, pts[1:]))
-        if best_cost is None or cost < best_cost:
-            best, best_cost = list(perm), cost
-    return best, best_cost or 0
+        routes.append((sum(_leg(a, b) for a, b in zip(pts, pts[1:])), list(perm)))
+    if not routes:
+        return list(spots), 0, True
+    routes.sort(key=lambda r: r[0])
+    for cost, perm in routes:
+        daytime = [s for s in perm if id(s) not in night]
+        if day_is_feasible(hotel, daytime, [s for s in perm if id(s) in night], _safe_leg):
+            return perm, cost, True
+    return routes[0][1], routes[0][0], False
 
 
 def split_evening(spots: List[Spot], evening_ok: bool,
@@ -150,7 +164,7 @@ def split_evening(spots: List[Spot], evening_ok: bool,
     """当天宜傍晚的景点里，哪些真的放在晚上、哪些只能改为白天去。返回 (晚上游, 改白天)。
 
     晚上不可用（返程日赶车）时全部改白天。否则在「总时长放得进晚餐后 EVENING_WINDOW_MIN」的组合里选：
-    改白天的越少越好，其次全天路程最短（给了 hotel 时；广州用例里留广州塔在晚上会造成
+    时间上走得通的优先，其次改白天的越少越好，再次全天路程最短（给了 hotel 时；广州用例里留广州塔在晚上会造成
     花城广场 → 大佛寺 → 广州塔 的往返，留大佛寺在晚上则顺路回住处），再次留时长长的。
     分天算法与排程器共用这个函数（传同一个 hotel），保证两边对「谁在晚上」的判断一致。
     """
@@ -162,8 +176,11 @@ def split_evening(spots: List[Spot], evening_ok: bool,
         for combo in itertools.combinations(evening, k):
             if sum(s.duration_minutes for s in combo) > EVENING_WINDOW_MIN:
                 continue
-            travel = _route_with_night(hotel, spots, {id(s) for s in combo})[1] if hotel else 0
-            key = (len(evening) - k, travel, -sum(s.duration_minutes for s in combo),
+            if hotel:
+                _, travel, ok = _route_with_night(hotel, spots, {id(s) for s in combo})
+            else:
+                travel, ok = 0, True
+            key = (not ok, len(evening) - k, travel, -sum(s.duration_minutes for s in combo),
                    sorted(s.name for s in combo))
             if best_key is None or key < best_key:
                 best_key, best_kept = key, list(combo)
@@ -171,7 +188,8 @@ def split_evening(spots: List[Spot], evening_ok: bool,
     return kept, [s for s in evening if s not in kept]
 
 
-def _best_day_route(hotel: LocationPoint, spots: List[Spot], evening_ok: bool = True) -> Tuple[List[Spot], int]:
+def _best_day_route(hotel: LocationPoint, spots: List[Spot],
+                    evening_ok: bool = True) -> Tuple[List[Spot], int, bool]:
     """当天景点的最短游览顺序（住宿出发、回到住宿）及往返通勤分钟数。
 
     遵守时段约束：宜早去的排最前、真正放在晚上的（见 split_evening）排最后；改为白天的按白天景点排。
@@ -227,9 +245,9 @@ def _exact_split(
                 key = (mask, evening_ok[d])
                 if key not in route_cache:
                     route_cache[key] = _best_day_route(hotel, [spots[i] for i in combo], evening_ok[d])
-                order, travel = route_cache[key]
-                if not feasible(order, d):
-                    continue
+                order, travel, timely = route_cache[key]
+                if not timely or not feasible(order, d):
+                    continue  # 营业时段对不上（怎么排都走不通），或白天预算放不下
                 load = travel + sum(s.duration_minutes for s in order)
                 # 宜傍晚却只能白天去的（返程日、或当晚已排满夜游），每个计一笔代价：能避开就避开
                 penalty = EVENING_DAYTIME_PENALTY * len(split_evening(order, evening_ok[d], hotel)[1])

@@ -129,6 +129,7 @@ AGENT_INSTRUCTIONS = f"""你是一位严谨的旅游路线规划与美食向导�
      · 再在主要游览片区用 keywords="特色小吃"、meal_type="snack" 检索一次。
    - 用户提到住宿地、返程车站/机场时，用 geocode_location 查出 id。
 3. 生成行程（必须调用 generate_trip_itinerary）：
+   - 每次调用都必须传齐 city、total_days、spots、foods 四个必填参数（实测常漏掉 total_days，白白多一轮）。
    - spots 传景点 id 列表；可按景点性质附上 duration_minutes 与 best_period。foods 传检索到的餐饮 id 列表。
    - 用户点名要去的景点写成 {{"id": "...", "must": true}}，景点放不下时算法会先舍弃没标 must 的；
      你自己补充推荐的景点不要标 must，优先放进 backup_spots（只在有空档且顺路时加入）。
@@ -212,6 +213,9 @@ def sse_event(event: str, data: dict) -> str:
 
 
 # ========== Event Stream Generator ==========
+EMPTY_RUN_RETRIES = 1  # 一轮既没文字也没行程（模型网关偶发空回复）时，自动重试的次数
+
+
 async def _event_stream(
     message: str,
     session=None,
@@ -219,33 +223,47 @@ async def _event_stream(
     conversation_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     # 同一会话共享一份 POI 仓库（多轮引用上一轮的 id 不必回查）；不同会话互不干扰
-    result = Runner.run_streamed(agent, input=message, session=session, context=context_for(conversation_id),
-                                 max_turns=MAX_TURNS)
+    context = context_for(conversation_id)
+    for attempt in range(EMPTY_RUN_RETRIES + 1):
+        # 重试用同一句话：会话里已有上一轮的检索结果，模型会接着做；history 会折叠相邻的重复用户消息
+        result = Runner.run_streamed(agent, input=message, session=session, context=context, max_turns=MAX_TURNS)
+        text_chars, produced = 0, False
 
-    async for event in result.stream_events():
-        if cancel_signal and cancel_signal.is_set():
-            break
+        async for event in result.stream_events():
+            if cancel_signal and cancel_signal.is_set():
+                return
 
-        if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-            logger.log(f"[stream] text_delta: {repr(event.data.delta)}")
-            yield sse_event("text_delta", {"delta": event.data.delta})
+            if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                text_chars += len(event.data.delta)
+                produced = True
+                yield sse_event("text_delta", {"delta": event.data.delta})
 
-        elif event.type == "run_item_stream_event":
-            if event.name == "tool_called":
-                tool_name = (
-                    getattr(event.item, "name", None)
-                    or getattr(getattr(event.item, "raw_item", None), "name", None)
-                )
-                if tool_name:
-                    logger.log(f"[stream] tool_called: {tool_name}")
-                    yield sse_event("tool_called", {"tool": tool_name})
+            elif event.type == "run_item_stream_event":
+                if event.name == "tool_called":
+                    tool_name = (
+                        getattr(event.item, "name", None)
+                        or getattr(getattr(event.item, "raw_item", None), "name", None)
+                    )
+                    if tool_name:
+                        logger.log(f"[stream] tool_called: {tool_name}")
+                        yield sse_event("tool_called", {"tool": tool_name})
 
-            elif event.name == "tool_output":
-                # 行程数据绕过模型直接推给前端渲染，模型无从改写
-                plan = extract_plan(getattr(event.item, "output", None))
-                if plan:
-                    logger.log(f"[stream] plan: {plan.get('city')} {plan.get('total_days')}d")
-                    yield sse_event("plan", plan)
+                elif event.name == "tool_output":
+                    # 行程数据绕过模型直接推给前端渲染，模型无从改写
+                    plan = extract_plan(getattr(event.item, "output", None))
+                    if plan:
+                        produced = True
+                        logger.log(f"[stream] plan: {plan.get('city')} {plan.get('total_days')}d")
+                        yield sse_event("plan", plan)
+
+        logger.log(f"[stream] run finished: attempt={attempt + 1} text_chars={text_chars} produced={produced}")
+        if produced:
+            return
+        # 实测出现过：检索了几轮后模型返回空内容就结束，用户看到一片空白
+        logger.error(f"[stream] empty run (attempt {attempt + 1}), "
+                     + ("retrying" if attempt < EMPTY_RUN_RETRIES else "giving up"))
+    yield sse_event("error", {"message": "模型这次没有返回结果，请再发送一次。", "errorType": "EmptyResponse",
+                              "status": None, "detail": None})
 
 
 # ========== Core Handler ==========

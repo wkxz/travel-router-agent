@@ -27,6 +27,10 @@ from .calendar_pack import (split_spots_by_time_and_calendar, is_spot_closed_on_
                             EXACT_MAX_SPOTS)
 from .validator import validate_plan, InfeasiblePlanError
 from .travel import TravelTimes
+from .timeline import (  # 与分天阶段的时间线模拟共用同一套时刻
+    DAY_START, LUNCH_EARLIEST, LUNCH_DURATION, LUNCH_TRIGGER, DINNER_DEFAULT, DINNER_DURATION,
+    SPOT_LATEST_END, EVENING_LATEST_END, EARLIEST_DEPART, MORNING_ARRIVE_DEFAULT,
+)
 
 CHINA_TZ = timezone(timedelta(hours=8))  # 固定 UTC+8，不依赖 tzdata（Windows 上 zoneinfo 缺数据）
 
@@ -35,21 +39,11 @@ def today_cn() -> date:
     """北京时间的今天；部署节点的系统时区可能是 UTC，不能直接用 date.today()。"""
     return datetime.now(CHINA_TZ).date()
 
-DAY_START = 9 * 60            # 每天 09:00 出发
-LUNCH_EARLIEST = 11 * 60 + 30
 LUNCH_EARLIEST_RUSH = 11 * 60  # 返程日赶车时允许提前到 11:00 吃午饭
 LUNCH_DEFAULT = 12 * 60
-LUNCH_DURATION = 75
-LUNCH_TRIGGER = 13 * 60 + 30  # 若下一个景点会拖过这个时间，先吃午饭
 SNACK_EARLIEST = 14 * 60 + 30
 SNACK_LATEST_START = 17 * 60
 SNACK_DURATION = 40
-DINNER_DEFAULT = 18 * 60
-DINNER_DURATION = 80
-SPOT_LATEST_END = 18 * 60 + 30  # 白天景点最晚结束时间，之后留给晚餐
-EVENING_LATEST_END = 22 * 60 + 30  # 夜游景点最晚结束时间
-EARLIEST_DEPART = 7 * 60      # 「宜早去」景点最早 07:00 出发
-MORNING_ARRIVE_DEFAULT = 8 * 60  # 「宜早去」但营业时间未知时，按 08:00 到达
 STATION_BUFFER = 60           # 提前到站/机场的最少缓冲
 MAX_MEAL_DIST_KM = 2.5        # 餐厅离当前位置的直线距离上限，超过宁可「周边自选」也不绕路
 REPEAT_CUISINE_PENALTY = 6.0  # 同一菜系已吃过一次后的降权
@@ -329,7 +323,10 @@ class TripScheduler:
             day = _DayBuilder(self, day_idx + 1, curr_date, is_last_day, restaurants,
                               used_restaurant_names, used_cuisines, gap_pool, unassigned)
 
-            ordered = order_by_period(days_spots[day_idx])
+            # 穷举分天时给出的顺序已满足时段约束且营业时间对得上（如 13:00 才开门的排在下午），原样使用；
+            # 景点多、走启发式分天时没有这层保证，再按宜早/宜晚排一次
+            exact = len(spots) <= EXACT_MAX_SPOTS
+            ordered = days_spots[day_idx] if exact else order_by_period(days_spots[day_idx])
             day.evening_ok = evening_ok[day_idx]
             # 晚上不可用（返程日赶车）或当晚已排满夜游时，多出的宜傍晚景点按白天游排，不能直接丢掉
             evening, demoted = split_evening(ordered, day.evening_ok, self.hotel)

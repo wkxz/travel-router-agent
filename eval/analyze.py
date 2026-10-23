@@ -58,9 +58,14 @@ def plan_metrics(plan):
     return out
 
 
+# 回复里用【】做小标题或强调说明的，不是店名/地名（实测误报：【天气与穿衣建议】【飞来峰景区门票】）
+NOT_A_PLACE = re.compile(r"提示|建议|说明|核对|指南|须知|门票|预约|概览|安排|贴士|注意|天气|交通|行程")
+
+
 def fabricated(text, tool_outputs):
     blob = "\n".join(tool_outputs)
-    names = set(re.findall(r"【([^】]{2,40})】", text))
+    body = "\n".join(line for line in text.splitlines() if not re.match(r"\s*(#|【)", line))  # 去掉标题行
+    names = {n for n in re.findall(r"【([^】]{2,40})】", body) if not NOT_A_PLACE.search(n)}
     names |= set(re.findall(r"([一-龥A-Za-z·]{2,20}[（(][^）)]{1,15}店[）)])", text))
     return sorted(n for n in names if n not in blob and re.sub(r"[（(].*", "", n) not in blob)
 
