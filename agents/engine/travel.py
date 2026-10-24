@@ -13,12 +13,24 @@ from .models import LocationPoint
 from .geo import haversine_distance, estimate_transit
 
 
+# 路网距离是直线的 3 倍以上、且多出 2km 以上时视为「绕行明显」：多半隔着海峡、江河、湖泊或封闭区域。
+# 城区正常路网约为直线的 1.3~1.6 倍。实测厦门中山路 → 鼓浪屿店餐厅直线 1.5km、驾车 9.3km / 85 分钟，
+# 挑候选时按直线估算会当成「就近」，时间轴里却要来回过海。
+DETOUR_FACTOR = 3.0
+DETOUR_MIN_EXTRA_KM = 2.0
+
+
+def is_roundabout(straight_km: float, road_km: float) -> bool:
+    return road_km >= straight_km * DETOUR_FACTOR and road_km - straight_km >= DETOUR_MIN_EXTRA_KM
+
+
 @dataclass(frozen=True)
 class Leg:
     minutes: int
     desc: str  # 如「步行约 12 分钟 (0.9 km)」
     road_km: float
     estimated: bool  # True = 按直线距离估算，非路网实测
+    roundabout: bool = False  # 路网实测比直线绕行明显（见 is_roundabout）
 
 
 class TravelTimes:

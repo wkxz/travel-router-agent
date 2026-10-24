@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件是 Agent 进入本工作目录时的第一入口。**开工前必读 `HANDOFF.md`。**
+本文件是 Agent 进入本工作目录时的第一入口。**开工前先读 `README.md`（现状与架构），再读 `HANDOFF.md`（环境与踩坑）。**
 
 ## 这是什么项目
 
@@ -8,12 +8,16 @@
 
 输入「想去的地方 + 想吃的东西 + 玩几天」→ 输出一份可直接照着走的行程单。
 
-## 现状
+## 现状（2026-10-23）
 
-**只有文档，没有代码。** 没有 `package.json`、没有 git 仓库、没有 `agents/`。
+**功能完整、可本地运行，尚未部署。** 后端 `agents/`、前端 `src/`、云函数 `cloud-functions/` 都已实现；
+`tests/` 有 188 个不联网的单元/回归测试，`eval/` 有 10 条真实提示词的测评脚本。
+开发在 `route-quality-fixes` 分支上进行（本地提交，未推送）。
 
 `reference/` 里是**另一个已完成项目（travel-decision-agent）的只读副本**，
 用于抄写法，**不是本项目的代码**。不要修改 `reference/` 下的任何文件。
+注意：副本 `reference/agents/_tools.py:70-71` 会把含高德 Key 的 URL 拼进错误信息，本项目已修复，
+项目 A 原件需要用户自己去修。
 
 ## 三条不可违背的规则
 
@@ -28,10 +32,10 @@
 
 ## 开工顺序
 
-1. 读 `HANDOFF.md`（尤其 §1 工作目录边界、§4.3 已定设计决策、§6 踩坑清单）
-2. 读 `docs/ANALYSIS.md`
-3. **向用户确认 `HANDOFF.md` §4.4 的三个待决策项**（不要自己决定）
-4. 再开始写代码
+1. 读 `README.md`（架构、目录、运行、测试）
+2. 读 `HANDOFF.md`（§5 环境与本地运行、§6 踩坑清单、§11 排程引擎的设计取舍）
+3. 改代码前后都跑 `python -m unittest discover -s tests -t .`；改了排程或提示词，用 `eval/` 实测对比
+4. 改了 `agents/` 后要重新 `python local-build-agent.py`，本地服务跑的是 `.edgeone/` 里的构建副本
 
 ## 用户偏好
 
@@ -48,4 +52,6 @@
 | 本地开发 | `edgeone makers dev` 在 Windows 上会卡死 → 用手工构建 + uvicorn（HANDOFF §5.3） |
 | 本机代理 | `curl` 本机服务必须加 `--noproxy '*'` |
 | 必吃数据源 | 高德 POI 传 `extensions=all` 才有 `biz_ext`（评分/人均/营业时间） |
+| 关键词检索 | 必须带 `citylimit=true`，否则 city=南京 搜「西湖」返回的全是杭州 |
+| 高德限流 | 10019~10022 都是 QPS 超限，要退避重试；`/v3/distance` 起点最多 100 个，超出静默丢弃 |
 | 不可用的数据源 | Wikipedia 系（被墙）、大众点评/美团（无公开 API） |

@@ -95,6 +95,16 @@ class TestBestPeriod(unittest.TestCase):
         self.assertGreaterEqual(_minutes(spot.time_slot), 7 * 60 + 30, "不能早于开门")
         self.assertLess(_minutes(plan.days[0].items[0].time_slot), 9 * 60, "出发时间应相应提前")
 
+    def test_second_morning_spot_not_labelled_morning(self):
+        # 两个宜早去的景点同一天：排到下午的那个不能再提示「上午人少」
+        spots = [Spot(**PANDA, best_period="morning", duration_minutes=180),
+                 Spot(**WUHOU, best_period="morning", duration_minutes=120)]
+        plan = TripScheduler("成都", 1, CHUNXI).schedule(spots, [])
+        late = [s for s in _items(plan, "spot") if _minutes(s.time_slot) >= 11 * 60]
+        self.assertEqual(len(late), 1, [it.time_slot for it in _items(plan, "spot")])
+        self.assertFalse(any(w.startswith("宜早去：") for w in late[0].warnings), late[0].warnings)
+        self.assertTrue(any("改为稍晚前往" in w for w in late[0].warnings), late[0].warnings)
+
     def test_evening_spot_after_daytime_spots(self):
         spots = [Spot(**JINLI, best_period="evening", duration_minutes=90), Spot(**WUHOU, duration_minutes=150)]
         plan = TripScheduler("成都", 1, CHUNXI).schedule(spots, [])

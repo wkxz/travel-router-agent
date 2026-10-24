@@ -2,7 +2,6 @@ import { memo } from 'react';
 import type { Message } from '../types';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
 // remark-gfm 默认把单个 ~ 当删除线，会把「19~22℃，夜间 14~16℃」渲染成 19<del>22℃，夜间 14</del>16℃
 import { useT } from '../i18n';
 import TripPlanCard from './TripPlanCard';
@@ -84,7 +83,7 @@ export default memo(function ChatBubble({ message }: Props) {
             {message.plan && <TripPlanCard plan={message.plan} />}
             {message.content && (
               <div className={`${styles.markdown} ${message.streaming ? styles.markdownStreaming : ''}`}>
-                <Markdown remarkPlugins={[[remarkGfm, { singleTilde: false }]]} rehypePlugins={[rehypeRaw]}>{normalizeMarkdown(message.content)}</Markdown>
+                <Markdown remarkPlugins={[[remarkGfm, { singleTilde: false }]]} >{normalizeMarkdown(message.content)}</Markdown>
               </div>
             )}
           </>

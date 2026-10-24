@@ -8,6 +8,8 @@ import math
 import re
 from typing import Tuple, Optional, Any
 
+from .hours import CLOSED_MARK
+
 
 def haversine_distance(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
     """计算两点经纬度的大圆球面距离，单位：千米 (km)。"""
@@ -139,10 +141,14 @@ def find_open_slot(
     - True：可行（开门前到达时允许等待至多 max_wait 分钟）
     - False：当天在营业时间内放不下
     - None：营业时间缺失或无法解析，按 earliest_start 排并要求现场确认
+
+    营业时间按星期/日期分段时，调用方先用 hours.hours_on_date 取出当天那段再传进来。
     """
     text = (open_time_str or "").strip()
     if not text:
         return None, earliest_start, "营业时间暂无数据，需现场确认"
+    if text == CLOSED_MARK:
+        return False, earliest_start, CLOSED_MARK
     if any(m in text for m in _ALL_DAY_MARKERS):
         return True, earliest_start, "全天开放"
     intervals = _open_intervals(text)

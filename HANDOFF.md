@@ -1,7 +1,7 @@
 # 项目交接文档（HANDOFF）
 
 > **写给接手的 Agent**：这是你在本工作目录的入口文档，读完即可开工。
-> 最后更新：2026-10-20 18:05
+> 最后更新：2026-10-23（项目 B 已实现，见 §4.2；架构与运行方式见 `README.md`）
 
 ---
 
@@ -14,8 +14,8 @@
 |---|---|---|
 | 目录 | `../travel-decision-agent/`（工作目录**外**） | `.`（当前工作目录） |
 | 名称 | 出行决策助手（找商场） | 旅游路线生成 + 必吃推荐 |
-| 性质 | **参考案例**，已上线并交付 | **期末自选题**，仅完成分析，无代码 |
-| 状态 | ✅ 完成，不要再改 | 🟡 4 份文档 + 只读参考副本，等用户拍板后开工 |
+| 性质 | **参考案例**，已上线并交付 | **期末自选题** |
+| 状态 | ✅ 完成，不要再改 | 🟢 功能完整、可本地运行、经多轮真实测评；未部署 |
 | 你的角色 | 只读，当模板抄 | **主战场** |
 
 **核心任务**：把项目 B 做出来。技术底座（EdgeOne Makers + OpenAI Agents SDK + 高德 API）
@@ -26,6 +26,8 @@
 ## 1. 工作目录边界（先看这节，避免瞎找文件）
 
 ### 1.1 工作目录里有什么
+
+> 下面是 2026-10-20 立项时的样子。现在已有 `agents/`、`src/`、`cloud-functions/`、`tests/`、`eval/` 等，见 `README.md` 的目录说明。
 
 ```
 travel-route-agent/                  ← 你的 workspace
@@ -177,10 +179,16 @@ travel-decision-agent/
 | 是否需要算法 | 否 | **是**：最近邻 + 2-opt + 按天切分 |
 | 最大风险 | 查不到 → 换一个 | **产出「看起来合理但根本走不通」的行程** |
 
-### 4.2 当前进度（诚实版）
+### 4.2 当前进度（2026-10-23）
 
-**只有文档，没有一行代码。** 没有 `package.json`、没有 `git` 仓库、没有 `agents/`。
-`reference/` 里全是**只读副本**，不是项目 B 的代码。
+- ✅ 后端：5 个工具 + 确定性排程引擎 + 独立校验器；高德真实路网通勤；忌口/预算；缺口清单（gaps / next_step）
+- ✅ 前端：聊天 + 行程卡片（无底图的路线示意图已按用户决定删除）
+- ✅ 测试：`tests/` 188 个不联网用例；`eval/` 10 条真实提示词测评（已跑 8 轮，结果不入库）
+- ✅ git：本地分支 `route-quality-fixes`，未推送；`master` 未合并
+- ⬜ 部署到 EdgeOne、飞书介绍文档、效果截图
+
+测评效果（第 1 轮 → 第 8 轮）：北京返程用例 150s/4 次排程 → 约 70s/1 次；忌口预算用例 255s/5 次 → 约 85s/1 次；
+「周边自选」饭点 5 → 0；未发现编造店名。
 
 ### 4.3 已经定下来的设计决策（不要推翻）
 
@@ -202,13 +210,14 @@ travel-decision-agent/
    `extensions=all` 返回 `biz_ext`（rating / cost / open_time），实测覆盖率 100%/92%/88%。
    不需要第三方点评 API（国内也没有可用的免费版），不需要人工兜底清单。
 
-### 4.4 待用户拍板（开工前必须问清，不要自己决定）
+### 4.4 决策项
 
-- [ ] 三档节奏（轻松 / 均衡 / 紧凑）做不做
-- [ ] 技术栈是否沿用 EdgeOne Makers + OpenAI Agents SDK（建议沿用，复用部署链路）
-- [ ] 飞书介绍文档：用连接器直接创建，还是生成 Markdown 让用户粘贴
+- [x] 三档节奏（轻松 / 均衡 / 紧凑）：已实现（`pace` 参数，每日 2/3/4 个景点）
+- [x] 技术栈：沿用 EdgeOne Makers + OpenAI Agents SDK
+- [x] 地图：无底图的示意图「很抽象」，用户决定删除（2026-10-22）
+- [ ] 飞书介绍文档：用连接器直接创建，还是生成 Markdown 让用户粘贴（待问）
 
-### 4.5 建议的落地顺序
+### 4.5 当初的落地顺序（1~5 已完成，剩 5 的部署与 6）
 
 1. `git init` + 从 `reference/config/` 拷 `package.json` / `tsconfig.json` / `vite.config.ts` / `edgeone.json`
    + 从 `reference/config/` 拷 `.env.example` 并建 `.gitignore`（务必先忽略 `.env`）
@@ -278,15 +287,12 @@ curl --noproxy '*' -N -X POST http://127.0.0.1:8088/chat \
 npx vite --config vite.config.local.ts    # 5173，/chat 代理到 8088
 ```
 
-### 5.4 `local-build-agent.py` 的可移植性坑
+### 5.4 `local-build-agent.py` 的模板路径
 
-`reference/tools/local-build-agent.py` 里硬编码了模板路径和项目路径：
-```python
-TPL = r'C:/Users/K/.workbuddy-ai/binaries/node/workspace/node_modules/edgeone/edgeone-dist/pages/templates/agent-python'
-```
-`local-dev.sh` 里也硬编码了 `cd "D:/桌面/上课/神经网络/travel-decision-agent"`。
-
-**拷到项目 B 用之前必须先改这两处**，并确认 `TPL` 路径在本机存在，否则脚本静默失败。
+项目 B 的 `local-build-agent.py` 已改为：优先读环境变量 `EDGEONE_AGENT_TEMPLATE`，再试项目内
+`node_modules/edgeone/...` 与原作者机器上的托管 CLI 路径；都找不到但 `.edgeone/agent-python/_platform`
+已存在时，沿用已有运行时、只重建 `pages_agents/`。`local-dev.sh` 按脚本所在目录定位，不再写死路径。
+（`reference/tools/` 里的副本仍是旧写法，只读不改。）
 
 ### 5.5 部署
 
@@ -324,6 +330,28 @@ TPL = r'C:/Users/K/.workbuddy-ai/binaries/node/workspace/node_modules/edgeone/ed
 | 14 | Wikipedia 接口本地通、线上挂 | EdgeOne 跑腾讯云**国内节点**，出网同本机 | 不要接 Wikipedia 系（见 §7） |
 | 15 | 工具返回塞爆上下文 | 高德单条 POI 有 40+ 字段 | 工具层只回传必要字段（6 个左右） |
 
+### 项目 B 开发中新踩的坑（2026-10-22 ~ 23，均有回归测试）
+
+| # | 现象 | 根因 | 解法 |
+|---|---|---|---|
+| 16 | city=南京 搜「西湖」返回 6 条杭州 | `/place/text` 默认不限城市 | 加 `citylimit=true` |
+| 17 | 101 个起点只返回 100 条 | `/v3/distance` 起点上限 100，超出静默丢弃 | 按 100 分批 |
+| 18 | 检索偶发失败 `CGQPS_HAS_EXCEEDED_THE_LIMIT` | 10022 也是 QPS 超限，旧代码只认 10021 | 10019~10022 统一退避重试 |
+| 19 | 高德 4xx 时 Key 进了工具输出 | httpx 异常文本含完整 URL（含 `key=`） | 只报状态码，错误文本统一脱敏 |
+| 20 | 模型漏传参数只收到 "An error occurred while running the tool" | SDK 默认 `DONT_LOG_TOOL_DATA`，校验细节被丢弃 | 必填项函数内自检并点名；自定义 `failure_error_function` |
+| 21 | 「下周一」算错 | 提示词里没有当天日期 | `instructions` 改为回调，每次请求注入北京时间日期 |
+| 22 | 复杂请求中途 `MaxTurnsExceeded` | SDK 默认 `max_turns=10` | 提高到 30（`AGENT_MAX_TURNS`） |
+| 23 | 中山陵周末被判闭馆 | 「墓室仅周二至周五开放」被当成全景区开放日 | 忽略子设施的「仅…」子句 |
+| 24 | 模型偶发空回复，用户看到空白 | 模型网关偶发，重跑不复现 | 无文字无行程时自动重试一次，仍空则提示重发 |
+| 25 | 提示词里写 `{"id": ...}` 导致模块加载失败 | `AGENT_INSTRUCTIONS` 是 f-string | 花括号写成 `{{ }}` |
+| 26 | 本地服务行为和源码不一致 | 本地跑的是 `.edgeone/` 构建副本 | 改了 `agents/` 必须重跑 `local-build-agent.py` |
+| 27 | 厦门一天过海 4 趟（岛上午饭 → 市区小吃 → 岛上晚饭 → 回市区） | 挑餐厅按直线（1.5km 算「就近」），时间轴用路网（驾车 9.3km / 85 分钟） | 路网距离 ≥ 直线 3 倍且多出 ≥2km 记为绕行（`travel.is_roundabout`）：餐厅与空档景点跳过，主景点路段标「以地图导航为准」 |
+| 28 | 3 天只排了 4 个景点，半天半天地空着 | 模型只传用户点名的景点，补充的都放进 backup_spots | 提示词要求 spots 总数达到「天数 × 每日上限」 |
+| 29 | 本地经 vite 访问时停止按钮无效 | 前端请求 `/stop`（运行时自带路由，部署后可用），`vite.config.local.ts` 只转发 `/chat`、`/chat/stop` | `src/api.ts` 改为项目自己的 `/chat/stop`，两种环境都可用 |
+| 30 | 武汉周二 18:00 晚餐排进 15:00 就关门的店，校验器也没拦 | 营业时间「周一至周四 06:00-15:00；周五至周日 06:00-20:00」两段时刻被合在一起判断 | `engine/hours.py` 的 `hours_on_date` 先取当天那段（星期条款、节假日特殊日期段、全天关闭），排程/分天/校验统一走它 |
+| 31 | 大理 20:00 的火车，下午空着却省略告别餐 | 晚餐固定 18:00；告别餐时间按回住处前的位置算 | 返程日告别餐可提前到 16:00；回住处后重算；上午游完离发车 ≥6 小时时午餐按回住处方向挑 |
+| 32 | 晚餐排进糕饼店、午餐排进疗养院职工餐厅 | 餐饮类型只按模型给的 meal_type | 高德子类为咖啡厅/茶艺馆/冷饮店/糕饼店/甜品店的不作正餐，店名含「职工餐厅」等的不选；用户点名的必吃除外 |
+
 **通用教训**：这个项目里所有「文档说的」和「直觉以为的」都被实测推翻过至少一次
 （品牌名错字、分类码语义、CLI 可用性、模型清单）。**任何结论先实测再说。**
 
@@ -359,16 +387,12 @@ TPL = r'C:/Users/K/.workbuddy-ai/binaries/node/workspace/node_modules/edgeone/ed
 
 ## 8. 接手后的第一小时（验收清单）
 
-按顺序做完，你就算真正接手了：
-
-- [ ] 1. 读 `docs/ANALYSIS.md`（219 行，10 节）—— 理解项目 B 要做什么
-- [ ] 2. 读 `docs/API-RESEARCH.md` —— 知道哪些数据源能用、哪些是坑
-- [ ] 3. 读 `reference/README.md` —— 知道 `reference/` 每个文件干什么、怎么抄
-- [ ] 4. 读 `reference/agents/_tools.py` —— 工具层的写法范本（重点看 `_throttle` 和 `_amap_get`）
-- [ ] 5. 读 `reference/agents/chat/index.py` —— handler + 提示词的范本
-- [ ] 6. 确认本机有可用的 `AMAP_API_KEY`（问用户，不要自己去翻项目 A 的 `.env`）
-- [ ] 7. 检查 `reference/tools/local-build-agent.py` 里的 `TPL` 路径在本机是否存在
-- [ ] 8. **向用户确认 §4.4 的三个待决策项**，然后才开始写代码
+- [ ] 1. 读 `README.md` —— 架构、目录、运行、测试
+- [ ] 2. 读本文件 §5、§6、§11 —— 本地运行方式、踩坑清单、排程引擎的设计取舍
+- [ ] 3. 跑 `python -m unittest discover -s tests -t .`，确认 188 个全过
+- [ ] 4. 确认 `.env` 里有可用的 Key（问用户，不要自己去翻项目 A 的 `.env`，也不要打印）
+- [ ] 5. `python local-build-agent.py` + `bash local-dev.sh` + `npx vite --config vite.config.local.ts`，发一条请求试跑
+- [ ] 6. 改排程或提示词后，用 `eval/` 跑真实测评并与上一轮 `compare`
 
 ---
 
@@ -423,3 +447,17 @@ TPL = r'C:/Users/K/.workbuddy-ai/binaries/node/workspace/node_modules/edgeone/ed
 也意味着**没有参考实现**，算法层必须自己写、自己验证（这也是为什么 §4.5 建议先独立跑通排程引擎）。
 
 **只有在用户明确要求「照着手册做一遍」时**才去读，且只需读相关那几页。
+
+---
+
+## 11. 排程引擎的设计取舍（改之前先看，参数都有实测依据）
+
+| 机制 | 位置 | 要点 |
+|---|---|---|
+| 分天 | `engine/calendar_pack.py` | 景点 ≤10 个时状态压缩 DP 穷举；目标依次为：排进去最多（用户点名 `must` 舍弃代价 10 倍）→ 通勤最短 → 负荷平方和均衡。可行性：通勤按直线估算 ×1.25（实测高德驾车普遍长约 30%）、返程日按末站到车站实际估算、夜游不占白天预算、营业时段用 `timeline.py` 模拟 |
+| 夜游 | `split_evening` | 晚餐后窗口 175 分钟；放不下的改白天并提示；留谁在晚上看全天路程；返程日晚上不可用 |
+| 通勤 | `engine/travel.py` + `_data/routing.py` | 时间轴与校验器用高德路网；挑候选只用估算（避免为每个候选请求）；取不到时回退估算并标「估算」 |
+| 餐厅 | `scheduler._pick_best_restaurant` | 按「绕路距离」排序；离当前位置 ≤2.5km 或绕路 ≤1km 可选，绕路 >4km 一律不选；按真实路段绕行明显（隔水等）的跳过；无预算时人均 >150 降权 |
+| 必吃 | 同上 | 绕路 ≤1km 强制优先，返程日 2km，最后一顿 3km；早茶类不排晚餐；排不进写 `unmet_must_eat` + `gaps` |
+| 补救 | `_tools.next_step` | gaps 非空：按建议并行补检索、只重排一次；gaps 为空：不要重排、不要自行删减景点 |
+| 校验 | `engine/validator.py` | 时间重叠、通勤时间够不够、营业时间、闭馆、餐厅/必吃重复、到站缓冲；有 error 就拒绝输出 |

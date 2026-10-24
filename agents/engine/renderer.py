@@ -22,7 +22,7 @@ def trip_tips(plan: FullTripPlan) -> List[str]:
     if any(it.category == "spot" and any(kw in it.title for kw in museum_kw) for it in all_items):
         tips.append("**场馆预约**：行程包含博物馆类场馆，这类场馆多实行实名预约，且常在周一闭馆，请提前在官方渠道核实开放时间并预约。")
 
-    if any(it.category == "spot" and "宜早去" in w for it in all_items for w in it.warnings):
+    if any(it.category == "spot" and w.startswith("宜早去：") for it in all_items for w in it.warnings):
         tips.append("**早起提醒**：部分景点已安排提前出发，前一晚注意早些休息。")
 
     if any(it.category == "free" for it in all_items):

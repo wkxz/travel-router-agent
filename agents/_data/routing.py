@@ -16,7 +16,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from .amap import amap_get
 from ..engine.geo import haversine_distance, WALKING_MAX_ROAD_KM
 from ..engine.models import LocationPoint
-from ..engine.travel import Leg, TravelTimes
+from ..engine.travel import Leg, TravelTimes, is_roundabout
 
 Fetch = Callable[[str, dict], dict]
 
@@ -26,6 +26,7 @@ MAX_REQUESTS = 80     # 单次排程的路网请求上限（节流 0.35s/次，�
 TAXI_WAIT_MIN = 5     # 打车的等车/上下车时间，与直线估算口径一致
 MIN_WALK_MIN = 3
 MIN_DRIVE_MIN = 8
+ROUNDABOUT_NOTE = "；路程远超直线距离，可能隔水或需绕行（如需轮渡），以地图导航为准"
 
 
 class AmapTravel(TravelTimes):
@@ -106,7 +107,9 @@ class AmapTravel(TravelTimes):
             if drive:
                 km = drive[0] / 1000
                 minutes = max(MIN_DRIVE_MIN, math.ceil(drive[1] / 60) + TAXI_WAIT_MIN)
-                return Leg(minutes, f"打车/驾车约 {minutes} 分钟 ({km:.1f} km)", round(km, 2), False)
+                odd = is_roundabout(straight_km, km)
+                desc = f"打车/驾车约 {minutes} 分钟 ({km:.1f} km)" + (ROUNDABOUT_NOTE if odd else "")
+                return Leg(minutes, desc, round(km, 2), False, roundabout=odd)
 
         self._estimated_legs += 1
         est = self.estimate(a, b, mode)

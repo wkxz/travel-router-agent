@@ -3,7 +3,7 @@
  *
  * Route mapping (file → route):
  *   agents/chat/index.ts                         → POST /chat                  Main chat endpoint (SSE)
- *   agents/stop/index.ts                         → POST /stop                  Abort the active agent run
+ *   agents/chat/stop.py                          → POST /chat/stop             Abort the active agent run
  *   cloud-functions/history/index.ts             → POST /history               Get conversation history
  *   cloud-functions/conversations/index.ts       → POST /conversations         List conversations for a user
  *   cloud-functions/clear-history/index.ts       → POST /clear-history         Clear messages of one conversation
@@ -21,7 +21,7 @@ import type {
 
 export const API = {
   chat: '/chat',
-  chatStop: '/stop',                        // Abort the active agent run
+  chatStop: '/chat/stop',                   // Abort the active agent run（agents/chat/stop.py；/stop 是运行时自带路由，本地 vite 代理不转发）
   history: '/history',                      // Get conversation history
   clearHistory: '/clear-history',           // Clear messages in a conversation
   conversations: '/conversations',          // List conversations for a user

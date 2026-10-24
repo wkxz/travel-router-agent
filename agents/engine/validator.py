@@ -12,6 +12,7 @@ from .models import FullTripPlan, Restaurant, Spot
 from .geo import parse_time_to_minutes, minutes_to_hhmm, check_open_window
 from .calendar_pack import is_spot_closed_on_date
 from .travel import TravelTimes
+from .hours import hours_on_date
 
 
 @dataclass
@@ -76,7 +77,7 @@ def validate_plan(plan: FullTripPlan, station_buffer: int = 60,
                     err(item.title, f"从【{prev_loc.name}】过来约需 {t_min} 分钟，只留了 {arrive - prev_end} 分钟")
 
             if item.category in ("spot", "meal", "snack") and loc and item.open_time:
-                if check_open_window(start, end, item.open_time)[0] is False:
+                if check_open_window(start, end, hours_on_date(item.open_time, day_date))[0] is False:
                     err(item.title, f"{item.time_slot} 不在营业时间内（{item.open_time}）")
 
             if item.category == "spot" and isinstance(loc, Spot) and day_date:

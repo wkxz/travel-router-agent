@@ -251,7 +251,7 @@ def generate_trip_itinerary(
     city: Annotated[str, "目的地城市或区县名称"],
     total_days: Annotated[int, "必填。游玩总天数，例如 2 或 3"] = 0,
     spots: Annotated[str, "必填。要去的景点，JSON 列表，元素为搜索结果里的 id，或带判断信息的对象（用户点名的景点加 \"must\": true，"
-                          "放不下时最后才舍弃；你自己补充推荐的景点不要加 must，最好放进 backup_spots）："
+                          "放不下时最后才舍弃；你自己补充推荐的景点不要加 must。总数宜达到「天数 × 每日上限」，否则会整段空档）："
                           "{\"id\": \"...\", \"duration_minutes\": 180, \"best_period\": \"morning\"}；"
                           "best_period 可选 'morning'(宜早去，如动物园/早市/观日出/登山) | 'evening'(宜傍晚夜间，如古街夜景/夜市街区/灯光秀)"] = "",
     foods: Annotated[str, "必填。餐饮候选，JSON 列表，元素为 search_food_and_snacks 返回的 id；"
