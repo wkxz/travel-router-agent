@@ -14,10 +14,11 @@ if sys.stdout.encoding.lower() != 'utf-8':
     except Exception:
         pass
 
-# 确保能 import pages_agents.engine
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".edgeone", "agent-python")))
+import unittest
 
-from pages_agents.engine import (
+# 直接测源码（agents/ 以别名 app 挂载），不依赖 .edgeone 构建产物
+import tests.fake_amap  # noqa: F401
+from app.engine import (
     LocationPoint,
     Spot,
     Restaurant,
@@ -26,7 +27,7 @@ from pages_agents.engine import (
     render_markdown,
     render_dict,
 )
-from pages_agents.engine.geo import is_time_in_range
+from app.engine.geo import is_time_in_range
 
 
 def test_optimizer():
@@ -126,6 +127,19 @@ def test_business_hour_check():
     assert not ok_closed, "白天 10:00 应不在夜市营业时间内"
 
     print("✅ 营业时间判断逻辑完全准确！\n")
+
+
+class TestSchedulerScript(unittest.TestCase):
+    """上面三个函数原是 pytest 风格，用 unittest 运行时不会被收集；包一层让它们真正参与回归。"""
+
+    def test_optimizer(self):
+        test_optimizer()
+
+    def test_scheduler_and_render(self):
+        test_scheduler_and_render()
+
+    def test_business_hour_check(self):
+        test_business_hour_check()
 
 
 if __name__ == "__main__":

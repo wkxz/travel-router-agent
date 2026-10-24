@@ -14,23 +14,35 @@ import shutil
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-TPL = r'C:/Users/K/.workbuddy-ai/binaries/node/workspace/node_modules/edgeone/edgeone-dist/pages/templates/agent-python'
 OUT = os.path.join(ROOT, '.edgeone', 'agent-python')
 PLAT = os.path.join(OUT, '_platform')
 PKG = os.path.join(OUT, 'pages_agents')
 
-if not os.path.exists(TPL):
-    print(f"Error: Template directory not found: {TPL}", file=sys.stderr)
-    sys.exit(1)
+# EdgeOne CLI 自带的 agent-python 运行时模板。优先用环境变量 EDGEONE_AGENT_TEMPLATE 指定；
+# 否则依次尝试项目内 node_modules 与原作者机器上的托管 CLI 路径。
+TEMPLATE_CANDIDATES = [
+    os.environ.get('EDGEONE_AGENT_TEMPLATE', ''),
+    os.path.join(ROOT, 'node_modules', 'edgeone', 'edgeone-dist', 'pages', 'templates', 'agent-python'),
+    r'C:/Users/K/.workbuddy-ai/binaries/node/workspace/node_modules/edgeone/edgeone-dist/pages/templates/agent-python',
+]
+TPL = next((p for p in TEMPLATE_CANDIDATES if p and os.path.isdir(p)), None)
 
-# 1. 拷贝 _platform 运行时模板
-os.makedirs(PLAT, exist_ok=True)
-for f in ('adapter.py', 'context.py', 'runtime.py', 'store.py', 'memory.py',
-          'local_blob_store.py', 'mcp_handler.py', '__init__.py'):
-    src_f = os.path.join(TPL, f)
-    if os.path.exists(src_f):
-        shutil.copy(src_f, os.path.join(PLAT, f))
-        print('platform:', f)
+# 1. 拷贝 _platform 运行时模板（找不到模板、但之前已经拷过时，沿用已有的，只重建业务代码）
+if TPL:
+    os.makedirs(PLAT, exist_ok=True)
+    for f in ('adapter.py', 'context.py', 'runtime.py', 'store.py', 'memory.py',
+              'local_blob_store.py', 'mcp_handler.py', '__init__.py'):
+        src_f = os.path.join(TPL, f)
+        if os.path.exists(src_f):
+            shutil.copy(src_f, os.path.join(PLAT, f))
+            print('platform:', f)
+elif os.path.exists(os.path.join(PLAT, 'adapter.py')):
+    print(f'platform: 未找到模板，沿用已有的 {PLAT}')
+else:
+    print('Error: 找不到 EdgeOne agent-python 运行时模板，也没有已构建的 _platform。\n'
+          '请设置环境变量 EDGEONE_AGENT_TEMPLATE 指向 <edgeone CLI>/edgeone-dist/pages/templates/agent-python。\n'
+          '已尝试：\n  ' + '\n  '.join(p for p in TEMPLATE_CANDIDATES if p), file=sys.stderr)
+    sys.exit(1)
 
 # 2. 生成 runtime_config.py（CLI 生成的内容）
 with open(os.path.join(PLAT, 'runtime_config.py'), 'w', encoding='utf-8') as fh:
