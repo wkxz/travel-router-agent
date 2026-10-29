@@ -35,6 +35,8 @@ export interface PlanItem {
   open_time: string;
   rating: number | null;
   warnings: string[];
+  /** 模型基于常识的游览建议（预约、门票、进出口等），未经数据核实；旧记录没有这个字段 */
+  tips?: string;
   location: PlanLocation | null;
 }
 

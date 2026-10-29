@@ -22,6 +22,11 @@ OTHERS = {
         "type": "购物服务;专卖店;书店", "address": "广州路173号",
         "biz_ext": {"rating": "4.8", "cost": [], "open_time": "10:00-22:00", "opentime2": "周一至周日 10:00-22:00"},
     },
+    "B0BOOKS2": {
+        "id": "B0BOOKS2", "name": "先锋书店(玄武湖分店)", "location": "118.793003,32.074346",
+        "type": "购物服务;专卖店;书店", "address": "玄武湖内",
+        "biz_ext": {"rating": "4.7", "cost": [], "open_time": "10:00-21:00", "opentime2": "周一至周日 10:00-21:00"},
+    },
 }
 FOODS = {
     "B0DUCK": {

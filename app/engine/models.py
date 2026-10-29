@@ -36,6 +36,11 @@ class Spot(LocationPoint):
     is_indoor: bool = False  # 是否为室内场馆（博物馆、科技馆等）
     best_period: str = ""  # 最佳游览时段："" 不限 | "morning" 宜早去 | "evening" 宜傍晚/夜间
     must_visit: bool = False  # 用户点名要去的：放不下时最后才舍弃（模型补充的景点不标）
+    # 同品牌的其他分店（用户只说了「先锋书店」、没指定哪家时）：分天时按当天路线换成最顺路且走得通的一家。
+    # 各分店本身的 branches 为空，branch_of 记原来那家的名称，用于在行程里说明换了店
+    branches: List["Spot"] = field(default_factory=list)
+    branch_of: str = ""
+    tips: str = ""  # 模型基于常识给的游览建议（预约、门票、最佳时段等），只作附注展示，未经数据核实
 
 
 @dataclass
@@ -64,6 +69,7 @@ class ScheduleItem:
     open_time: str = ""
     rating: Optional[float] = None
     warnings: List[str] = field(default_factory=list)  # 如 "营业时间接近打烊，请注意"
+    tips: str = ""  # 景点的经验建议（来自模型常识，未经核实），见 Spot.tips
 
 
 @dataclass

@@ -47,6 +47,7 @@ def _item_dict(item: ScheduleItem) -> Dict[str, Any]:
         "open_time": item.open_time,
         "rating": item.rating,
         "warnings": item.warnings,
+        "tips": item.tips,
         "location": {"name": loc.name, "lng": loc.lng, "lat": loc.lat, "poi_id": loc.poi_id} if loc else None,
     }
 
@@ -190,6 +191,8 @@ def render_markdown(plan: FullTripPlan) -> str:
                 warn_str += f"<br><sub>({item.open_time})</sub>"
 
             desc_clean = item.description.replace("\n", " ")
+            if item.tips:
+                desc_clean += f" 💡{item.tips.replace('|', '／')}（经验建议，未经核实）"
             lines.append(
                 f"| {item.time_slot} | {icon} {item.title} | {transit} | {desc_clean} | {cost_str} | {warn_str} |"
             )

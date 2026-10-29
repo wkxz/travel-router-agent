@@ -83,6 +83,34 @@ class TestSameAreaSameDay(unittest.TestCase):
             self.assertEqual(day["老门东"], day["夫子庙秦淮风光带"], (kw, rows))
 
 
+class TestBranchChoice(unittest.TestCase):
+    """同品牌多家分店（spot.branches）时，按当天路线选最顺路且走得通的一家。
+    南京实测：模型选了五台山总店，从玄武湖打车 4km 过去；玄武湖分店就在湖边。"""
+
+    def _book(self, **kw):
+        alt = Spot(name="先锋书店(玄武湖分店)", lng=118.793003, lat=32.074346, duration_minutes=90,
+                   open_time=kw.pop("alt_open", "周一至周日 10:00-21:00"), branch_of="先锋书店(五台山总店)")
+        return Spot(name="先锋书店(五台山总店)", lng=118.773496, lat=32.050720, duration_minutes=90,
+                    open_time="周一至周日 10:00-21:00", must_visit=True, branches=[alt])
+
+    def _plan(self, book, days=1):
+        north = [s for s in _nanjing_spots() if s.name in ("古鸡鸣寺", "玄武湖景区")]
+        return TripScheduler("南京", days, HOTEL, start_date="2026-11-25").schedule(north + [book], [])
+
+    def test_picks_branch_on_route(self):
+        plan = self._plan(self._book())
+        names = [n for _, _, n in _spot_rows(plan)]
+        self.assertIn("先锋书店(玄武湖分店)", names, _spot_rows(plan))
+        item = next(it for d in plan.days for it in d.items if it.category == "spot" and "分店" in it.title)
+        self.assertTrue(any("先锋书店(五台山总店)" in w for w in item.warnings), item.warnings)
+        self.assertEqual(plan.unassigned_spots, [])
+
+    def test_closed_branch_not_picked(self):
+        plan = self._plan(self._book(alt_open="周三 闭店；周四至周二 10:00-21:00"))
+        names = [n for _, _, n in _spot_rows(plan)]
+        self.assertIn("先锋书店(五台山总店)", names, _spot_rows(plan))
+
+
 class TestNightSpotNotInDailyCap(unittest.TestCase):
     def test_three_daytime_plus_one_night(self):
         """均衡档每天白天 ≤3 个；晚餐后的夜游另算，不挤占白天名额。"""

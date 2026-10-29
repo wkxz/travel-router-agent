@@ -193,6 +193,30 @@ def split_evening(spots: List[Spot], evening_ok: bool, hotel: Optional[LocationP
     return kept, [s for s in evening if s not in kept]
 
 
+def pick_branches(hotel: LocationPoint, spots: List[Spot], evening_ok: bool = True,
+                  day: Optional[date] = None) -> List[Spot]:
+    """当天景点里有同品牌多家分店的（Spot.branches），逐个换成让当天路线走得通且通勤最短的一家；当天闭店的不选。
+
+    南京实测：用户说「先锋书店」，模型选了五台山总店，从玄武湖打车 4km 过去，而玄武湖分店就在湖边。
+    分店由确定性代码按路线挑，不交给模型凭印象选。"""
+    chosen = list(spots)
+    for i, s in enumerate(spots):
+        if not s.branches:
+            continue
+        best_key, best = None, s
+        for v in (s, *s.branches):
+            if v is not s and day and is_spot_closed_on_date(v, day)[0]:
+                continue
+            order, travel, timely = _best_day_route(hotel, chosen[:i] + [v] + chosen[i + 1:], evening_ok, day)
+            # 车程估算按分钟分档，两家常打平（南京实测都是 50 分钟），再按路线总公里数比
+            pts = [hotel, *order, hotel]
+            key = (not timely, travel, sum(place_distance(a, b) for a, b in zip(pts, pts[1:])))
+            if best_key is None or key < best_key:
+                best_key, best = key, v
+        chosen[i] = best
+    return chosen
+
+
 def _best_day_route(hotel: LocationPoint, spots: List[Spot], evening_ok: bool = True,
                     day: Optional[date] = None) -> Tuple[List[Spot], int, bool]:
     """当天景点的最短游览顺序（住宿出发、回到住宿）及往返通勤分钟数。
@@ -255,8 +279,10 @@ def _exact_split(
                     continue
                 mask = sum(1 << i for i in combo)
                 key = (mask, evening_ok[d], tuple(hours_on_date(spots[i].open_time, date_list[d]) for i in combo))
+                if any(spots[i].branches for i in combo):
+                    key += (date_list[d],)  # 各分店营业时间不同，按日期区分
                 if key not in route_cache:
-                    chosen = [spots[i] for i in combo]
+                    chosen = pick_branches(hotel, [spots[i] for i in combo], evening_ok[d], date_list[d])
                     night_, moved_ = split_evening(chosen, evening_ok[d], hotel, date_list[d])
                     route_cache[key] = (*_route_with_night(hotel, chosen, {id(s) for s in night_}, date_list[d]),
                                         night_, moved_)
@@ -340,6 +366,8 @@ def split_spots_by_time_and_calendar(
                               list(end_points or [None] * total_days))
         placed = {id(s): d for d, chunk in enumerate(chunks) for s in chunk}
         for s in spots:
+            # 换成同品牌分店的，按排进去的那家算
+            s = next((v for v in (s, *s.branches) if id(v) in placed), s)
             if id(s) not in placed:
                 unassigned.append((s, unassigned_reason(s)))
                 continue

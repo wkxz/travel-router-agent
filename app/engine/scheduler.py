@@ -24,7 +24,7 @@ from .geo import (
     first_open_minute,
 )
 from .calendar_pack import (split_spots_by_time_and_calendar, is_spot_closed_on_date, split_evening,
-                            EXACT_MAX_SPOTS, _best_day_route)
+                            EXACT_MAX_SPOTS, _best_day_route, pick_branches)
 from .validator import validate_plan, InfeasiblePlanError
 from .travel import TravelTimes
 from .hours import hours_on_date
@@ -443,6 +443,12 @@ class TripScheduler:
             end_points=[None] * (self.total_days - 1) + [self.departure_point],
         )
         exact = len(spots) <= EXACT_MAX_SPOTS
+        if not exact:  # 穷举分天时已在每个组合里挑好分店；启发式分天在这里按每天的景点挑
+            evening_ok = self._evening_ok()
+            days_spots = [pick_branches(self.hotel, d, evening_ok[i], self.start_date + timedelta(days=i))
+                          for i, d in enumerate(days_spots)]
+        # 换了分店的按实际排进去的那家计（点名景点是否丢失等判断按名称进行）
+        spots = [s for d in days_spots for s in d] + [s for s, _ in packed_out]
         best = self._run_days(days_spots, packed_out, spots, backup_spots, restaurants, exact)
         best = self._retry_with_swaps(days_spots, best, packed_out, spots, backup_spots, restaurants, exact)
         day_plans, unassigned, meal_gaps, used_cuisines = best[1:]
@@ -744,6 +750,8 @@ class _DayBuilder:
             warnings.append(f"到达后需等待开门（{minutes_to_hhmm(start)} 开放）")
         if filler:
             warnings.append("利用空档顺路加游")
+        if s.branch_of:
+            warnings.append(f"同品牌分店：原选「{s.branch_of}」，按当天路线换成更顺路的这家")
         if s.best_period == "morning":
             # 同一天有两个宜早去的景点时只有一个能排在上午；排到中午以后的不能再写「上午人少」（厦门实测 15:07 仍这样提示）
             warnings.append("宜早去：上午人少、体验更好" if start < MORNING_HINT_LATEST
@@ -768,6 +776,7 @@ class _DayBuilder:
             open_time=s.open_time,
             rating=s.rating,
             warnings=warnings,
+            tips=s.tips,
         ))
         self._add_cost(s.cost)
         self.dist += leg.road_km

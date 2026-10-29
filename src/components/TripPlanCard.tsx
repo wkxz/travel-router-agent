@@ -114,6 +114,11 @@ export default memo(function TripPlanCard({ plan }: { plan: TripPlan }) {
                         {item.open_time && <span>营业 {item.open_time}</span>}
                       </div>
                     )}
+                    {item.tips && (
+                      <p className={styles.itemTips}>
+                        💡 {item.tips}<span className={styles.unverified}>经验建议，未经核实，出发前请确认</span>
+                      </p>
+                    )}
                     {item.warnings.length > 0 && (
                       <ul className={styles.warnings}>
                         {item.warnings.map((w, j) => <li key={j}>{w}</li>)}

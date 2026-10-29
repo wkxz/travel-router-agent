@@ -124,6 +124,37 @@ class TestItineraryTool(ToolTestCase):
         self.assertEqual(tools.extract_plan(json.dumps(res, ensure_ascii=False))["city"], "南京")
 
 
+class TestBranchesAndTips(ToolTestCase):
+    """用户只说品牌（「先锋书店」）时，按当天路线换成最顺路的分店；模型的经验建议原样附在景点上。"""
+
+    def _run(self, book_ref):
+        call(tools.search_scenic_spots, self.ctx, city="南京", keywords="玄武湖")
+        res = call(tools.generate_trip_itinerary, self.ctx, city="南京", total_days=1, start_date="2026-10-27",
+                   spots=json.dumps(["B0LAKE", book_ref], ensure_ascii=False), foods="[]")
+        self.assertTrue(res["success"], res)
+        return [i for d in res["plan"]["days"] for i in d["items"] if i["category"] == "spot"]
+
+    def test_any_branch_picks_branch_on_route(self):
+        spots = self._run({"id": "B0BOOKS", "any_branch": True})
+        book = next(i for i in spots if "先锋书店" in i["title"])
+        self.assertIn("玄武湖分店", book["title"], spots)
+        self.assertTrue(any("分店" in w for w in book["warnings"]), book)
+
+    def test_named_branch_kept_without_flag(self):
+        spots = self._run({"id": "B0BOOKS"})
+        self.assertTrue(any("五台山总店" in i["title"] for i in spots), spots)
+        self.assertNotIn("/place/text", [p for p, a in self.fake.calls if a.get("keywords") == "先锋书店"])
+
+    def test_tips_attached_and_capped(self):
+        tip = "需在小程序提前预约。\n周一闭馆" + "很长" * 200
+        spots = self._run({"id": "B0BOOKS", "tips": tip})
+        book = next(i for i in spots if "先锋书店" in i["title"])
+        self.assertTrue(book["tips"].startswith("需在小程序提前预约。 周一闭馆"), book["tips"])
+        self.assertLessEqual(len(book["tips"]), 121)
+        lake = next(i for i in spots if "玄武湖" in i["title"])
+        self.assertEqual(lake["tips"], "")
+
+
 class TestExtractPlan(unittest.TestCase):
     def test_rejects_non_plans(self):
         for output in (None, "", "不是 JSON", '{"success": false, "error": "x"}',

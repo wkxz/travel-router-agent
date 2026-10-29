@@ -261,7 +261,10 @@ def generate_trip_itinerary(
     spots: Annotated[str, "必填。要去的景点，JSON 列表，元素为搜索结果里的 id，或带判断信息的对象（用户点名的景点加 \"must\": true，"
                           "放不下时最后才舍弃；你自己补充推荐的景点不要加 must。总数宜达到「天数 × 每日上限」，否则会整段空档）："
                           "{\"id\": \"...\", \"duration_minutes\": 180, \"best_period\": \"morning\"}；"
-                          "best_period 可选 'morning'(宜早去，如动物园/早市/观日出/登山) | 'evening'(宜傍晚夜间，如古街夜景/夜市街区/灯光秀)"] = "",
+                          "best_period 可选 'morning'(宜早去，如动物园/早市/观日出/登山) | 'evening'(宜傍晚夜间，如古街夜景/夜市街区/灯光秀)；"
+                          "用户只说了连锁品牌、没指定哪家店（如「先锋书店」）时加 \"any_branch\": true，算法按当天路线换成最顺路的分店；"
+                          "\"tips\" 可写一两句该景点的实用经验（预约方式、门票、从哪个地铁站/门进、最佳时段，≤60 字），"
+                          "原样附在行程卡片上并标明未经核实，不要写营业时间（以检索数据为准）"] = "",
     foods: Annotated[str, "必填。餐饮候选，JSON 列表，元素为 search_food_and_snacks 返回的 id；"
                           "如需改变类型可写成 {\"id\": \"...\", \"meal_type\": \"snack\"}"] = "",
     hotel_id: Annotated[str, "住宿地 id（geocode_location 或搜索结果）；用户未说明住宿时留空，算法会按景点中心估算"] = "",
@@ -297,9 +300,9 @@ def generate_trip_itinerary(
         budget = max_cost_per_meal if max_cost_per_meal and max_cost_per_meal > 0 else None
         inputs = build_trip_inputs(_repo(ctx), spots, foods, backup_spots,
                                    hotel_id=hotel_id, departure_id=departure_id, must_eat=must_eat,
-                                   avoid=avoid, max_cost_per_meal=budget)
+                                   avoid=avoid, max_cost_per_meal=budget, city=city)
         points = [p for p in (inputs.hotel, inputs.departure) if p]
-        points += inputs.spots + inputs.backups + inputs.restaurants
+        points += inputs.spots + [b for s in inputs.spots for b in s.branches] + inputs.backups + inputs.restaurants
         travel = AmapTravel(points, fetch=amap_get)
         scheduler = TripScheduler(
             city=city,
@@ -317,7 +320,8 @@ def generate_trip_itinerary(
             "city": city, "days": total_days, "pace": pace, "hotel": hotel_id, "must_eat": must_eat,
             "avoid": avoid, "max_cost": budget,
             "departure": [departure_id, departure_time],
-            "spots": [[s.poi_id, s.name, s.duration_minutes, s.best_period, s.must_visit] for s in inputs.spots],
+            "spots": [[s.poi_id, s.name, s.duration_minutes, s.best_period, s.must_visit, len(s.branches)]
+                      for s in inputs.spots],
             "backups": [b.poi_id for b in inputs.backups],
             "foods": len(inputs.restaurants), "skipped": inputs.skipped,
         }))

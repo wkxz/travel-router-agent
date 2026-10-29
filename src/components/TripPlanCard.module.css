@@ -95,6 +95,19 @@
   border-radius: var(--radius-sm);
   padding: 1px 6px;
 }
+.itemTips {
+  margin-top: 4px;
+  font-size: .8rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.unverified {
+  margin-left: 6px;
+  font-size: .7rem;
+  color: var(--text-secondary);
+  opacity: .75;
+  display: inline-block;
+}
 .cat_free .itemTitle, .cat_hotel .itemTitle { font-weight: 500; color: var(--text-secondary); }
 
 .tips summary { cursor: pointer; font-size: .86rem; font-weight: 600; color: var(--text-secondary); }

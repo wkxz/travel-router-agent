@@ -33,6 +33,16 @@ SCENIC_CATEGORY = "风景名胜"
 GATE_MAX_KM = 5.0     # 离景区中心更远的子点视为数据异常
 GATE_MERGE_KM = 0.15  # 相距这么近的出入口视为同一个（导航入口常与某个门重合）
 
+# 连锁分店的命名：「品牌(分店名)」，括号里以店/馆结尾，如「先锋书店(五台山总店)」「先锋书店(颐和书馆)」
+BRANCH_NAME = re.compile(r"^(.+?)\s*[（(]([^（）()]*[店馆])[)）]$")
+MAX_BRANCHES = 5
+
+
+def brand_of(name: str) -> str:
+    """「先锋书店(玄武湖分店)」→「先锋书店」；不是「品牌(分店)」形式的返回空串。"""
+    m = BRANCH_NAME.match((name or "").strip())
+    return m.group(1).strip() if m else ""
+
 
 @dataclass
 class PoiRecord:
@@ -171,6 +181,7 @@ class PoiRepo:
     def __init__(self, fetch: Optional[Fetch] = None):
         self._fetch = fetch  # None = 调用时再取 amap_get，便于测试替换
         self._items: Dict[str, PoiRecord] = {}
+        self._branches: Dict[Tuple[str, str], List[str]] = {}  # (品牌, 城市) -> 分店 id，同一会话只查一次
         self._lock = threading.Lock()  # 模型并行调用工具时会在多个线程里写入
 
     def put(self, rec: PoiRecord) -> PoiRecord:
@@ -208,6 +219,23 @@ class PoiRepo:
         if not rec:
             return None, err
         return self.put(rec), ""
+
+    def branches(self, rec: PoiRecord, city: str) -> List[PoiRecord]:
+        """同城同品牌的其他分店（不含 rec 本身），按高德相关度取前 MAX_BRANCHES 家；查询失败时返回空列表。
+
+        只认名称同为「品牌(分店)」形式且品牌一致的，避免「先锋」搜出「先锋水岸」「光华书局」之类。"""
+        brand = brand_of(rec.name)
+        if not brand or not city:
+            return []
+        key = (brand, city)
+        if key not in self._branches:
+            data = (self._fetch or amap_get)("/place/text", {
+                "keywords": brand, "city": city, "citylimit": "true", "offset": 10, "page": 1, "extensions": "all"})
+            found = [r for r in (record_from_poi(p) for p in ([] if "error" in data else data.get("pois") or []))
+                     if r and brand_of(r.name) == brand]
+            self._branches[key] = [self.put(r).id for r in found]
+        with self._lock:
+            return [self._items[i] for i in self._branches[key] if i != rec.id and i in self._items][:MAX_BRANCHES]
 
     def with_gates(self, rec: PoiRecord) -> PoiRecord:
         """风景名胜类景点补查 v5 门区子点并缓存；查询失败（如 Key 未开通 v5）时沿用已有的导航入口，不影响排程。"""

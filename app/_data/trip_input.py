@@ -13,6 +13,7 @@ from .poi_repo import PoiRepo, PoiRecord
 
 MEAL_TYPES = ("meal", "snack", "night_market")
 DURATION_RANGE = (15, 600)
+TIPS_MAX_CHARS = 120  # 景点经验建议的长度上限：卡片上只放一两句，长篇内容交给最终回复
 
 
 def parse_refs(text: Any) -> List[dict]:
@@ -45,15 +46,26 @@ def _duration(value: Any, default: int) -> int:
     return max(DURATION_RANGE[0], min(DURATION_RANGE[1], v))
 
 
-def to_spot(rec: PoiRecord, ref: dict, default_duration: int) -> Spot:
+def _flag(value: Any) -> bool:
+    return value in (True, "true", "True", 1, "1")
+
+
+def _tips(value: Any) -> str:
+    """模型给的经验建议：压成一行、截断，不做其他改写（展示时标明未经核实）。"""
+    text = " ".join(str(value or "").split())
+    return text[:TIPS_MAX_CHARS] + ("…" if len(text) > TIPS_MAX_CHARS else "")
+
+
+def to_spot(rec: PoiRecord, ref: dict, default_duration: int, branch_of: str = "") -> Spot:
     period = ref.get("best_period")
     return Spot(
         name=rec.name, lng=rec.lng, lat=rec.lat, address=rec.address, poi_id=rec.id,
         duration_minutes=_duration(ref.get("duration_minutes"), default_duration),
         open_time=rec.open_time, rating=rec.rating, cost=rec.cost, tags=list(rec.tags),
         best_period=period if period in ("morning", "evening") else "",
-        must_visit=ref.get("must") in (True, "true", "True", 1, "1"),
+        must_visit=_flag(ref.get("must")),
         gates=[LocationPoint(name=name, lng=lng, lat=lat) for name, lng, lat in rec.gates],
+        branch_of=branch_of, tips=_tips(ref.get("tips")),
     )
 
 
@@ -107,6 +119,7 @@ def build_trip_inputs(
     must_eat: str = "",
     avoid: str = "",
     max_cost_per_meal: Optional[float] = None,
+    city: str = "",
 ) -> TripInputs:
     """解析各类 id 引用。住宿/返程地点无法识别时抛 ValueError（这类错误会改变整份行程，不能静默忽略）；
     单个景点/餐厅识别失败只记入 skipped。
@@ -129,7 +142,11 @@ def build_trip_inputs(
             out.skipped.append(f"{ref['id']}（{err}）")
         elif rec.id not in seen:
             seen.add(rec.id)
-            out.spots.append(to_spot(repo.with_gates(rec), ref, default_duration=120))
+            spot = to_spot(repo.with_gates(rec), ref, default_duration=120)
+            if _flag(ref.get("any_branch")):  # 用户只说了品牌：同城其他分店作候选，排程时按路线挑
+                spot.branches = [to_spot(repo.with_gates(b), ref, 120, branch_of=rec.name)
+                                 for b in repo.branches(rec, city) if b.id not in seen]
+            out.spots.append(spot)
 
     for ref in parse_refs(backup_spots):
         rec, _ = repo.get(ref["id"])  # 备选景点用不上也不算未安排，识别失败直接忽略
