@@ -19,7 +19,7 @@
 | 你的角色 | 只读，当模板抄 | **主战场** |
 
 **核心任务**：把项目 B 做出来。技术底座（EdgeOne Makers + OpenAI Agents SDK + 高德 API）
-已经在项目 A 验证过，`reference/` 里有它的只读副本可以直接抄。
+已经在项目 A 验证过。（早期用于抄写法的副本 `reference/` 已于 2026-10-29 删除，本项目不依赖它；下文提到它的地方仅作历史记录。）
 
 ---
 
@@ -37,12 +37,6 @@ travel-route-agent/                  ← 你的 workspace
 │   ├── ANALYSIS.md       219 行     ← 项目 B 要做什么（产品 + 技术分析）
 │   ├── API-RESEARCH.md   160 行     ← 哪些数据源能用（全部实测）
 │   └── NOTES.md           77 行     ← 实测踩坑记录
-└── reference/                       ← 项目 A 的只读副本（213K）
-    ├── README.md                    ← 每个文件干什么、怎么抄
-    ├── agents/                      ← _tools.py（★核心范本）、chat/index.py、_logger.py
-    ├── config/                      ← edgeone.json、package.json、tsconfig、requirements、.env.example
-    ├── tools/                       ← local-build-agent.py、local-dev.sh（Windows 绕过方案）
-    └── src/                         ← 完整 React 前端骨架
 ```
 
 ### 1.2 工作目录外有什么（需要时找用户要，不要自己乱翻）
@@ -73,7 +67,7 @@ travel-route-agent/                  ← 你的 workspace
 
 ### 2.2 需要凭据时怎么办
 
-`reference/config/.env.example` 里有 4 个变量的模板：
+项目根目录 `.env.example` 里有变量模板：
 
 | 变量 | 用途 | 敏感度 |
 |---|---|---|
@@ -102,7 +96,7 @@ Agent 解析地点 → 搜附近商场 → 逐个核对品牌 → 测距 → 给
 属于「**单点核验**」型：找一个同时满足 A、B 条件的最近地点。
 **和你做的项目 B 不是一个难度量级**，别以为照抄就完事。
 
-### 3.2 目录结构（原件视角，`reference/` 是其子集）
+### 3.2 目录结构（项目 A 原件）
 
 ```
 travel-decision-agent/
@@ -150,7 +144,7 @@ travel-decision-agent/
 | `check_brand_in_mall` | `/v3/place/around` | 小半径(300m)搜品牌 + 用 `mall_name` 二次校验剔除隔壁商场误命中 |
 | `measure_distance` | `/v3/distance` | `type`: 0=直线 1=驾车 |
 
-**必须复用的三个工程模式**（都在 `reference/agents/_tools.py`）：
+**必须复用的三个工程模式**（本项目实现在 `agents/_data/amap.py`）：
 1. `_throttle()` — 全局最小间隔 0.35s（高德免费 Key QPS 极低）
 2. `_amap_get()` — 统一注入 Key + 节流 + QPS 退避重试 + `status=="1"` 校验
 3. 错误统一返回 `{"error": "..."}`，**让模型能解释失败原因**，绝不当成空结果
@@ -255,7 +249,7 @@ CLI 构建期做两件事（本地必须自己复现）：
    ⚠️ **只改这种**，`from agents import Agent` 这种符号导入**不能动**，改了会 ImportError
    ⚠️ 业务代码内部用相对导入（`from .._tools import`），**不需要重写**
 
-**启动步骤**（把 `reference/tools/` 的两个脚本拷到项目 B 根目录，改掉里面的绝对路径后使用）：
+**启动步骤**（脚本在项目根目录）：
 ```bash
 # 1. 生成 .edgeone/agent-python/ 构建产物
 ./.venv/Scripts/python.exe local-build-agent.py
@@ -292,7 +286,6 @@ npx vite --config vite.config.local.ts    # 5173，/chat 代理到 8088
 项目 B 的 `local-build-agent.py` 已改为：优先读环境变量 `EDGEONE_AGENT_TEMPLATE`，再试项目内
 `node_modules/edgeone/...` 与原作者机器上的托管 CLI 路径；都找不到但 `.edgeone/agent-python/_platform`
 已存在时，沿用已有运行时、只重建 `pages_agents/`。`local-dev.sh` 按脚本所在目录定位，不再写死路径。
-（`reference/tools/` 里的副本仍是旧写法，只读不改。）
 
 ### 5.5 部署
 
@@ -417,7 +410,6 @@ npx vite --config vite.config.local.ts    # 5173，/chat 代理到 8088
 | `docs/ANALYSIS.md` | 项目 B 产品与技术分析（10 节，含架构图、MVP 边界、风险、飞书大纲） |
 | `docs/NOTES.md` | 项目 B 实测记录（分类码纠正、需求澄清过程） |
 | `docs/API-RESEARCH.md` | 数据源调研（全部接口实测结果 + 覆盖率 + 落地要点） |
-| `reference/README.md` | 项目 A 副本的逐文件说明 + 两个必须照抄的工程模式 |
 
 ### 课程手册：默认不要读
 

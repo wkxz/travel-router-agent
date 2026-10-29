@@ -14,10 +14,8 @@
 `tests/` 有 195 个不联网的单元/回归测试，`eval/` 有 10 条真实提示词的测评脚本。
 代码在 `master` 分支，远程仓库 https://github.com/wkxz/travel-router-agent 。
 
-`reference/` 里是**另一个已完成项目（travel-decision-agent）的只读副本**，
-用于抄写法，**不是本项目的代码**。不要修改 `reference/` 下的任何文件。
-注意：副本 `reference/agents/_tools.py:70-71` 会把含高德 Key 的 URL 拼进错误信息，本项目已修复，
-项目 A 原件需要用户自己去修。
+本项目独立运行，不依赖其他项目。早期用于抄写法的项目 A（travel-decision-agent）副本 `reference/`
+已于 2026-10-29 删除；项目 A 原件 `_tools.py` 会把含高德 Key 的 URL 拼进错误信息，需要用户自己去修。
 
 ## 三条不可违背的规则
 
