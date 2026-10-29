@@ -31,6 +31,8 @@ CASES = [
     ("08_diet_budget", ["成都2天，我完全不能吃辣，人均80以内，想去宽窄巷子和武侯祠，住春熙路"]),
     ("09_multiturn", ["广州玩两天，想去广州塔和陈家祠，想吃早茶，住北京路", "第二天把陈家祠换成长隆野生动物世界"]),
     ("10_too_many", ["上海2天，想去外滩、豫园、南京路步行街、迪士尼、田子坊、武康路、陆家嘴，住人民广场"]),
+    # 2026-10-29 用户实测：鸡鸣寺/玄武湖、夫子庙/老门东被拆到不同天，午饭 13:49，下午空档 2.5 小时
+    ("11_nanjing_3days", ["11月25号想去南京玩3天，想要去鸡鸣寺、玄武湖、南京博物院、先锋书店，老门东，音乐台，吃咸水鸭，牛肉锅贴，其他看着来"]),
 ]
 
 
@@ -76,7 +78,7 @@ async def main(out_dir, ids):
             recs.append(await run_turn(msg, session, cid))
             print(f"[{cid}] {recs[-1]['seconds']}s tools={len(recs[-1]['tools'])} plans={len(recs[-1]['plans'])} "
                   f"err={recs[-1]['error']}", flush=True)
-        json.dump({"id": cid, "turns": recs}, open(f"{out_dir}/{cid}.json", "w"), ensure_ascii=False, indent=1)
+        json.dump({"id": cid, "turns": recs}, open(f"{out_dir}/{cid}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
 os.makedirs(sys.argv[1], exist_ok=True)
 asyncio.run(main(sys.argv[1], sys.argv[2:]))

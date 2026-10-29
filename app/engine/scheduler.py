@@ -29,7 +29,7 @@ from .validator import validate_plan, InfeasiblePlanError
 from .travel import TravelTimes
 from .hours import hours_on_date
 from .timeline import (  # 与分天阶段的时间线模拟共用同一套时刻
-    DAY_START, LUNCH_EARLIEST, LUNCH_DURATION, LUNCH_TRIGGER, DINNER_DEFAULT, DINNER_DURATION,
+    DAY_START, LUNCH_EARLIEST, LUNCH_DURATION, LUNCH_TRIGGER, LUNCH_FIRST_FROM, DINNER_DEFAULT, DINNER_DURATION,
     SPOT_LATEST_END, EVENING_LATEST_END, EARLIEST_DEPART, MORNING_ARRIVE_DEFAULT,
 )
 
@@ -198,6 +198,7 @@ class TripScheduler:
         must_eat_detour_km: float = MUST_EAT_MAX_DETOUR_KM,
         allow_morning_dish: bool = True,
         day: Optional[date] = None,  # 用餐日期：营业时间按星期/日期分段时取当天那段
+        max_dist_km: float = MAX_MEAL_DIST_KM,
     ) -> Optional[Restaurant]:
         """在指定类型中就近挑选营业中的餐厅；类型严格匹配，不拿小吃顶替正餐。只挑选，不登记为已用。
 
@@ -230,7 +231,8 @@ class TripScheduler:
             and not (exclude and r.name in exclude)
             and r.meal_type in meal_types
             # 离当前位置近，或者就在去下一站的路上（如回住处途中），都不算专程绕路
-            and (place_distance(anchor, r) <= MAX_MEAL_DIST_KM
+            # max_dist_km 收紧（如小吃只要顺路的）时，用户点名的必吃仍按 MAX_MEAL_DIST_KM
+            and (place_distance(anchor, r) <= (MAX_MEAL_DIST_KM if r.dish_key else max_dist_km)
                  or (next_stop is not None and detour(r) <= ON_THE_WAY_KM))
             # 离当前位置近但方向相反、绕路过大的也不要：宁可「周边自选」并写进缺口清单
             and (next_stop is None or detour(r) <= MAX_MEAL_DETOUR_KM)
@@ -292,7 +294,8 @@ class TripScheduler:
             evening, demoted = split_evening(ordered, day.evening_ok, self.hotel, curr_date)
             day.demoted = {s.name for s in demoted}
             daytime = [s for s in ordered if s not in evening]
-            day.reserved_spots = len(evening)  # 夜游景点稍后才排，但要占每日景点数
+            # 夜游景点稍后才排：每日景点数只限白天，夜游另有 1 个名额，多出的才占白天名额（与分天算法一致）
+            day.reserved_spots = max(0, len(evening) - 1)
             # 当天最后要去的地方：夜游景点 > 返程车站 > 住宿；餐厅按「往这个方向顺路」挑
             day.end_target = (evening[0] if evening
                               else self.departure_point if is_last_day and self.departure_point
@@ -303,8 +306,9 @@ class TripScheduler:
             lunch_done = False
             for s in daytime:
                 t_min = self.travel.leg(day.loc, s).minutes
-                if not lunch_done and day.t >= 11 * 60 and day.t + t_min + s.duration_minutes > LUNCH_TRIGGER:
-                    day.add_lunch(next_stop=s)
+                if not lunch_done and day.t >= LUNCH_FIRST_FROM and day.t + t_min + s.duration_minutes > LUNCH_TRIGGER:
+                    day.fill_gap(LUNCH_EARLIEST)  # 离开饭还有一会儿：附近能顺路加游就加，否则标出空档
+                    day.add_lunch(next_stop=s, earliest=LUNCH_EARLIEST)
                     lunch_done = True
                 day.place_main_spot(s)
 
@@ -775,7 +779,7 @@ class _DayBuilder:
     def _add_meal(self, label: str, category: str, meal_types: Tuple[str, ...], earliest: int,
                   duration: int, placeholder: Optional[str], anchor: Optional[LocationPoint] = None,
                   next_stop: Optional[LocationPoint] = None, must_eat_detour_km: float = MUST_EAT_MAX_DETOUR_KM,
-                  allow_morning_dish: bool = True) -> bool:
+                  allow_morning_dish: bool = True, max_dist_km: float = MAX_MEAL_DIST_KM) -> bool:
         # 按直线估算挑出、但按真实路段不合适的候选：到店时已打烊，或路网绕行明显（隔水等，见 is_roundabout）
         rejected: set = set()
         detoured = False
@@ -785,7 +789,7 @@ class _DayBuilder:
                 origin=self.loc, now=self.t, earliest=earliest, duration=duration,
                 used_cuisines=self.used_cuisines, exclude=rejected,
                 next_stop=next_stop or self.end_target, must_eat_detour_km=must_eat_detour_km,
-                allow_morning_dish=allow_morning_dish, day=self.date,
+                allow_morning_dish=allow_morning_dish, day=self.date, max_dist_km=max_dist_km,
             )
             if not rest:
                 road_km, t_desc, start, place = 0.0, None, max(self.t, earliest), self.loc
@@ -871,8 +875,8 @@ class _DayBuilder:
             return self.s.hotel
         return None
 
-    def add_lunch(self, next_stop: Optional[LocationPoint] = None) -> None:
-        earliest = self.lunch_earliest()
+    def add_lunch(self, next_stop: Optional[LocationPoint] = None, earliest: Optional[int] = None) -> None:
+        earliest = self.lunch_earliest() if earliest is None else min(earliest, self.lunch_earliest())
         self._add_meal("午餐", "meal", ("meal",), earliest, LUNCH_DURATION, "景点周边自选简餐",
                        next_stop=next_stop, must_eat_detour_km=self._must_eat_detour())
 
@@ -880,8 +884,10 @@ class _DayBuilder:
         # 下午游览拖过 17:00 就不再安排小吃，避免和晚餐连着吃
         if self.t > SNACK_LATEST_START:
             return
+        # 小吃可有可无，只挑顺路的（比直接去当天终点多走 ≤ ON_THE_WAY_KM）：南京实测离开景点后专程打车去吃一口，
+        # 或回住处休整后又出门买小吃。点名的必吃仍按 MAX_MEAL_DIST_KM 挑
         self._add_meal("特色小吃尝鲜", "snack", ("snack",), SNACK_EARLIEST, SNACK_DURATION, None,
-                       must_eat_detour_km=self._must_eat_detour())
+                       must_eat_detour_km=self._must_eat_detour(), max_dist_km=0.0)
         if self.skipped_meals and self.skipped_meals[-1] == "特色小吃尝鲜":
             self.skipped_meals.pop()  # 小吃本就可选，赶车时省略不必提示
 

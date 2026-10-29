@@ -33,6 +33,16 @@ class ToolTestCase(unittest.TestCase):
 
 
 class TestSearchTools(ToolTestCase):
+    def test_named_place_outside_spot_types_found(self):
+        """2026-10-29 南京实测：先锋书店属于书店类目，按景点类目检索只返回名字不相干的「骏惠书屋」，模型拿它顶替。"""
+        res = call(tools.search_scenic_spots, self.ctx, city="南京", keywords="先锋书店")
+        self.assertIn("先锋书店", res["spots"][0]["name"], res)
+        self.assertTrue(self.ctx.repo.get(res["spots"][0]["id"])[0])
+
+    def test_category_search_not_widened(self):
+        call(tools.search_scenic_spots, self.ctx, city="南京", keywords="博物院")
+        self.assertEqual(len([p for p, _ in self.fake.calls if p == "/place/text"]), 1)
+
     def test_spot_search_returns_ids_without_coordinates(self):
         res = call(tools.search_scenic_spots, self.ctx, city="南京", keywords="南京博物院")
         raw = json.dumps(res, ensure_ascii=False)

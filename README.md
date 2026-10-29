@@ -70,7 +70,7 @@ docker compose up -d --build
 npm run build                                                   # 类型检查 + 生产构建
 ```
 
-`eval/` 提供 10 条真实提示词的端到端测评（会产生调用费用），见 [开发指南](docs/DEVELOPMENT.md#5-真实环境测评)。
+`eval/` 提供 11 条真实提示词的端到端测评（会产生调用费用），见 [开发指南](docs/DEVELOPMENT.md#5-真实环境测评)。
 
 ## 项目结构
 

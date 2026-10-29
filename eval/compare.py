@@ -5,7 +5,7 @@ from analyze import plan_metrics
 
 
 def summary(path):
-    r = json.load(open(path))
+    r = json.load(open(path, encoding="utf-8"))
     rows = []
     for t in r["turns"]:
         gens = sum(c["tool"] == "generate_trip_itinerary" for c in t["tools"])

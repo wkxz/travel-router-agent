@@ -6,6 +6,7 @@
 from __future__ import annotations
 import math
 import re
+from functools import lru_cache
 from typing import Tuple, Optional, Any
 
 from .hours import CLOSED_MARK
@@ -133,8 +134,9 @@ def is_time_in_range(target_hhmm: str, open_time_str: str) -> Tuple[bool, str]:
 _ALL_DAY_MARKERS = ("24小时", "全天", "00:00-24:00", "00:00-23:59")
 
 
-def _open_intervals(open_time_str: str) -> list:
-    """把营业时间字符串解析成 [(开始分钟, 结束分钟)]，跨零点的结束时间 +1440。"""
+@lru_cache(maxsize=4096)  # 纯函数；分天穷举时同一段营业时间会被解析十几万次
+def _open_intervals(open_time_str: str) -> tuple:
+    """把营业时间字符串解析成 ((开始分钟, 结束分钟), ...)，跨零点的结束时间 +1440。"""
     result = []
     for start_s, end_s in re.findall(r"(\d{1,2}:\d{2})\s*[-–~]\s*(\d{1,2}:\d{2})", open_time_str):
         start_m, end_m = parse_time_to_minutes(start_s), parse_time_to_minutes(end_s)
@@ -143,7 +145,7 @@ def _open_intervals(open_time_str: str) -> list:
         if end_m <= start_m:
             end_m += 24 * 60
         result.append((start_m, end_m))
-    return result
+    return tuple(result)
 
 
 def first_open_minute(open_time_str: str) -> Optional[int]:

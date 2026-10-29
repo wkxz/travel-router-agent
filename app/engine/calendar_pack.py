@@ -117,6 +117,11 @@ BALANCE_WEIGHT_SQ = 0.001
 FEASIBILITY_TRAVEL_FACTOR = 1.25
 EVENING_WINDOW_MIN = 175  # 晚餐后到 22:30 可用于夜游的时间：同一天的夜游景点总时长不能超过它
 EVENING_DAYTIME_PENALTY = 90  # 宜傍晚的景点只能放在晚上不可用的那天（如返程日）时的代价：能避开就避开
+# 同片区：place_distance 不超过 SAME_AREA_KM 的两个景点步行可达，拆到两天时每对计 SAME_AREA_SPLIT_PENALTY。
+# 南京实测：老门东与夫子庙相距 1.07km、中山陵与音乐台 0.91km，旧版只看通勤与均衡，把它们拆到不同天，
+# 第二天又专程打车回同一片区。60 约等于多 1 小时通勤，压得过均衡项，又不至于为凑片区而丢景点。
+SAME_AREA_KM = 1.2
+SAME_AREA_SPLIT_PENALTY = 60
 _PERIOD_RANK = {"morning": 0, "evening": 2}
 
 
@@ -135,19 +140,26 @@ def _route_with_night(hotel: LocationPoint, spots: List[Spot], night: set,
     返回 (顺序, 往返通勤分钟, 时间上是否走得通)：在营业时间都对得上的顺序里取最短的；
     一个也走不通时返回最短顺序并标记 False（上海用例：田子坊艺术中心 13:00 才开，排在上午就放不下）。
     """
+    # 只枚举满足「早 → 中 → 晚」的顺序：各组内部全排列再拼接（与「全排列后过滤」结果和先后次序完全相同，
+    # 5 个点含 2 个夜游时只需 12 种而不是 120 种）
+    rank = lambda s: 2 if id(s) in night else 0 if s.best_period == "morning" else 1
+    groups = [[s for s in spots if rank(s) == r] for r in range(3)]
+    # 两两车程先算好查表：place_distance 要比较各门区，逐个排列现算是分天阶段的主要耗时
+    pts_all = [hotel, *spots]
+    legs = {(id(a), id(b)): _leg(a, b) for a in pts_all for b in pts_all}
+    leg = lambda a, b: legs[id(a), id(b)]
     routes = []
-    for perm in itertools.permutations(spots):
-        ranks = [2 if id(s) in night else 0 if s.best_period == "morning" else 1 for s in perm]
-        if ranks != sorted(ranks):
-            continue
+    for parts in itertools.product(*(itertools.permutations(g) for g in groups)):
+        perm = [s for part in parts for s in part]
         pts = [hotel, *perm, hotel]
-        routes.append((sum(_leg(a, b) for a, b in zip(pts, pts[1:])), list(perm)))
+        routes.append((sum(leg(a, b) for a, b in zip(pts, pts[1:])), list(perm)))
     if not routes:
         return list(spots), 0, True
     routes.sort(key=lambda r: r[0])
     for cost, perm in routes:
         daytime = [s for s in perm if id(s) not in night]
-        if day_is_feasible(hotel, daytime, [s for s in perm if id(s) in night], _safe_leg, day):
+        if day_is_feasible(hotel, daytime, [s for s in perm if id(s) in night],
+                           lambda a, b: leg(a, b) * FEASIBILITY_TRAVEL_FACTOR, day):
             return perm, cost, True
     return routes[0][1], routes[0][0], False
 
@@ -203,7 +215,8 @@ def _exact_split(
 ) -> List[List[Spot]]:
     """穷举所有「景点 → 天」的分配，选出：排进去的景点最多 → 总通勤最短 → 每天负荷最均衡。
 
-    每天的景点子集必须满足：当天不闭馆、不超过每日景点数、游玩+通勤不超过当天预算。
+    每天的景点子集必须满足：当天不闭馆、白天不超过每日景点数（夜游另加 1 个）、游玩+通勤不超过当天预算。
+    步行可达（≤ SAME_AREA_KM）的景点尽量放同一天，拆开计 SAME_AREA_SPLIT_PENALTY。
     宜傍晚的景点优先放在晚上可用的日子；放到晚上不可用的那天（如返程日）时按白天游，并计入额外代价。
     end_points[d] 非空时（返程日的车站），可行性按「最后一个景点 → 车站」的实际估算距离判断。
     """
@@ -212,10 +225,9 @@ def _exact_split(
     def leg(a, b) -> int:
         return estimate_transit(place_distance(a, b))[0]
 
-    def feasible(order: List[Spot], d: int) -> bool:
+    def feasible(order: List[Spot], night: set, d: int) -> bool:
         # 只算白天：晚餐后的夜游不占白天预算（它们另受 EVENING_WINDOW_MIN 约束）。
         # 旧版把夜游时长也算进白天，带一个 2 小时夜游的那天白天少 2 小时容量，多丢景点、下午空 5 小时。
-        night = {id(s) for s in split_evening(order, evening_ok[d], hotel, date_list[d])[0]}
         daytime = [s for s in order if id(s) not in night]
         travel, cur = 0, hotel
         for s in daytime:
@@ -228,25 +240,38 @@ def _exact_split(
 
     # 每天可行的子集：mask -> (代价, 游览顺序)
     options: List[Dict[int, Tuple[float, List[Spot]]]] = []
-    # 键含各景点当天的营业时间：按星期分段营业的景点在不同日子结果不同，其余日子照常命中缓存
-    route_cache: Dict[tuple, Tuple[List[Spot], int, bool]] = {}
+    # 键含各景点当天的营业时间：按星期分段营业的景点在不同日子结果不同，其余日子照常命中缓存。
+    # 值为 (游览顺序, 通勤分钟, 时间上是否走得通, 晚上游, 改白天)，与 _best_day_route 的算法相同
+    route_cache: Dict[tuple, tuple] = {}
+    near_pairs = [(i, j) for i in range(n) for j in range(i + 1, n)
+                  if place_distance(spots[i], spots[j]) <= SAME_AREA_KM]
     for d in range(days):
         opts: Dict[int, Tuple[float, List[Spot]]] = {0: (0.0, [])}
         open_idx = [i for i in range(n) if not is_spot_closed_on_date(spots[i], date_list[d])[0]]
-        for k in range(1, min(max_spots_per_day, len(open_idx)) + 1):
+        # 每日景点数只限白天：晚餐后的夜游另加 1 个，不占白天名额（旧版夜游占名额，南京第 3 天白天只排 2 个、下午空 2.5 小时）
+        for k in range(1, min(max_spots_per_day + 1, len(open_idx)) + 1):
             for combo in itertools.combinations(open_idx, k):
+                if sum(spots[i].best_period != "evening" for i in combo) > max_spots_per_day:
+                    continue
                 mask = sum(1 << i for i in combo)
                 key = (mask, evening_ok[d], tuple(hours_on_date(spots[i].open_time, date_list[d]) for i in combo))
                 if key not in route_cache:
-                    route_cache[key] = _best_day_route(hotel, [spots[i] for i in combo], evening_ok[d],
-                                                       date_list[d])
-                order, travel, timely = route_cache[key]
-                if not timely or not feasible(order, d):
-                    continue  # 营业时段对不上（怎么排都走不通），或白天预算放不下
+                    chosen = [spots[i] for i in combo]
+                    night_, moved_ = split_evening(chosen, evening_ok[d], hotel, date_list[d])
+                    route_cache[key] = (*_route_with_night(hotel, chosen, {id(s) for s in night_}, date_list[d]),
+                                        night_, moved_)
+                order, travel, timely, night, moved = route_cache[key]
+                if (len(order) - len(night) > max_spots_per_day or not timely
+                        or not feasible(order, {id(s) for s in night}, d)):
+                    continue  # 白天超过景点数上限、营业时段对不上（怎么排都走不通），或白天预算放不下
                 load = travel + sum(s.duration_minutes for s in order)
-                # 宜傍晚却只能白天去的（返程日、或当晚已排满夜游），每个计一笔代价：能避开就避开
-                penalty = EVENING_DAYTIME_PENALTY * len(split_evening(order, evening_ok[d], hotel, date_list[d])[1])
-                opts[mask] = (travel + BALANCE_WEIGHT_SQ * load * load + penalty, order)
+                # 宜傍晚却只能白天去的（返程日、或当晚已排满夜游），每个计一笔代价：能避开就避开。
+                # 但和当晚的夜游景点步行可达时不算（老门东下午逛、夫子庙晚上逛，正是同一片区的合理安排）
+                moved = [m for m in moved if not any(place_distance(m, x) <= SAME_AREA_KM for x in night)]
+                # 同片区被拆开：这一天含其中一个、不含另一个；两边的天各计一半，合起来每对一笔
+                cut = sum(1 for i, j in near_pairs if (mask >> i & 1) != (mask >> j & 1))
+                opts[mask] = (travel + BALANCE_WEIGHT_SQ * load * load + EVENING_DAYTIME_PENALTY * len(moved)
+                              + SAME_AREA_SPLIT_PENALTY * cut / 2, order)
         options.append(opts)
 
     # DP：第 d 天之前已用掉的景点集合 -> (最小代价, 每天的子集)
@@ -307,7 +332,7 @@ def split_spots_by_time_and_calendar(
         need = estimate_route_minutes(hotel, [s])
         if all(need > budgets[i] for i, d in enumerate(date_list) if not is_spot_closed_on_date(s, d)[0]):
             return f"可用游玩时间不足（含路程约需 {need} 分钟）"
-        return f"每日景点数（≤{max_spots_per_day}）或游玩时长已排满"
+        return f"每日白天景点数（≤{max_spots_per_day}，夜游另加 1 个）或游玩时长已排满"
 
     if len(spots) <= EXACT_MAX_SPOTS:
         chunks = _exact_split(hotel, spots, date_list, budgets, max_spots_per_day,

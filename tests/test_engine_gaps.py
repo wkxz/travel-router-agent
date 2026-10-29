@@ -85,13 +85,25 @@ class TestRealRunRegressions(unittest.TestCase):
     """哈尔滨 / 厦门实测中发现的问题（只用通用规则，不涉及城市专属逻辑）。"""
 
     def test_evening_spot_counts_toward_cap_when_filling(self):
-        # 均衡档每日 ≤3：白天 2 个 + 夜游 1 个时，不应再用空档补第 4 个
+        # 均衡档白天 ≤3、夜游另加 1 个（2026-10-29 起夜游不占白天名额，见 test_day_cohesion）：
+        # 白天 3 个 + 夜游 1 个时，不应再用空档补第 5 个
         spots = [Spot(name="白天A", lng=104.080, lat=30.656, duration_minutes=60),
                  Spot(name="白天B", lng=104.083, lat=30.656, duration_minutes=60),
+                 Spot(name="白天E", lng=104.081, lat=30.655, duration_minutes=60),
                  Spot(name="夜游C", lng=104.085, lat=30.657, duration_minutes=60, best_period="evening")]
         plan = TripScheduler("任意城市", 1, CHUNXI).schedule(
             spots, [], backup_spots=[Spot(name="备选D", lng=104.082, lat=30.657, duration_minutes=60)])
-        self.assertLessEqual(plan.days[0].total_spots, 3, [it.title for it in _items(plan, "spot")])
+        self.assertLessEqual(plan.days[0].total_spots, 4, [it.title for it in _items(plan, "spot")])
+
+    def test_two_evening_spots_take_one_daytime_slot(self):
+        # 夜游只有 1 个额外名额：白天 2 个 + 夜游 2 个已满 4 个，不再补白天景点
+        spots = [Spot(name="白天A", lng=104.080, lat=30.656, duration_minutes=60),
+                 Spot(name="白天B", lng=104.083, lat=30.656, duration_minutes=60),
+                 Spot(name="夜游C", lng=104.085, lat=30.657, duration_minutes=60, best_period="evening"),
+                 Spot(name="夜游F", lng=104.086, lat=30.657, duration_minutes=60, best_period="evening")]
+        plan = TripScheduler("任意城市", 1, CHUNXI).schedule(
+            spots, [], backup_spots=[Spot(name="备选D", lng=104.082, lat=30.657, duration_minutes=60)])
+        self.assertNotIn("游览【备选D】", [it.title for it in _items(plan, "spot")])
 
     def test_gap_between_lunch_and_snack_is_visible(self):
         rs = [Restaurant(name="午餐店", lng=104.0816, lat=30.6559, meal_type="meal"),

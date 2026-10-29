@@ -15,6 +15,14 @@ SPOTS = {
         "biz_ext": {"rating": "4.7", "cost": [], "open_time": "", "opentime2": "周一至周日 00:00-24:00"},
     },
 }
+# 不在景点类目（110000|140000）里的地点：只有不限类目检索才返回（实测先锋书店是 061205 书店）
+OTHERS = {
+    "B0BOOKS": {
+        "id": "B0BOOKS", "name": "先锋书店(五台山总店)", "location": "118.770300,32.052500",
+        "type": "购物服务;专卖店;书店", "address": "广州路173号",
+        "biz_ext": {"rating": "4.8", "cost": [], "open_time": "10:00-22:00", "opentime2": "周一至周日 10:00-22:00"},
+    },
+}
 FOODS = {
     "B0DUCK": {
         "id": "B0DUCK", "name": "回味鸭血粉丝汤(中山东路店)", "location": "118.821500,32.042500",
@@ -71,15 +79,16 @@ class FakeAmap:
     def __call__(self, path: str, params: dict) -> dict:
         self.calls.append((path, dict(params)))
         if path in ("/place/text", "/place/around"):
-            pool = FOODS if params.get("types") == "050000" else SPOTS
+            types = params.get("types")
+            pool = FOODS if types == "050000" else SPOTS if types else {**SPOTS, **OTHERS}
             kw = params.get("keywords", "")
             pois = [p for p in pool.values() if kw in p["name"] or kw in p["type"]] or list(pool.values())
             return {"status": "1", "pois": pois}
         if path == "/place/detail":
-            p = {**SPOTS, **FOODS}.get(params["id"])
+            p = {**SPOTS, **OTHERS, **FOODS}.get(params["id"])
             return {"status": "1", "pois": [p] if p else []}
         if path == "/v5/place/detail":
-            p = {**SPOTS, **FOODS}.get(params["id"])
+            p = {**SPOTS, **OTHERS, **FOODS}.get(params["id"])
             return {"status": "1", "pois": [{**p, "children": CHILDREN.get(p["id"], [])}] if p else []}
         if path == "/distance":
             return _fake_distance(params)

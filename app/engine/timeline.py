@@ -16,6 +16,9 @@ DAY_START = 9 * 60            # 每天 09:00 出发
 LUNCH_EARLIEST = 11 * 60 + 30
 LUNCH_DURATION = 75
 LUNCH_TRIGGER = 13 * 60 + 30  # 若下一个景点会拖过这个时间，先吃午饭
+# 下一个景点会拖过 LUNCH_TRIGGER 时，此刻不早于它就先吃午饭（等到 LUNCH_EARLIEST 开饭）。旧版要求 11:00 以后，
+# 南京实测 10:54 游完一处、下一处要 2.5 小时，午饭被拖到 13:49；多等半小时开饭好过饿到下午两点
+LUNCH_FIRST_FROM = LUNCH_EARLIEST - 60
 DINNER_DEFAULT = 18 * 60
 DINNER_DURATION = 80
 SPOT_LATEST_END = 18 * 60 + 30  # 白天景点最晚结束时间，之后留给晚餐
@@ -44,7 +47,7 @@ def day_is_feasible(hotel: LocationPoint, daytime: List[Spot], night: List[Spot]
     lunch_done = False
     for s in daytime:
         travel = leg(cur, s)
-        if not lunch_done and t >= 11 * 60 and t + travel + s.duration_minutes > LUNCH_TRIGGER:
+        if not lunch_done and t >= LUNCH_FIRST_FROM and t + travel + s.duration_minutes > LUNCH_TRIGGER:
             t = max(t, LUNCH_EARLIEST) + LUNCH_DURATION
             lunch_done = True
         status, start, _ = find_open_slot(t + travel, s.duration_minutes, hours_on_date(s.open_time, day),

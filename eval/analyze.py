@@ -72,7 +72,7 @@ def fabricated(text, tool_outputs):
 
 def main(d):
     for f in sorted(glob.glob(f"{d}/*.json")):
-        r = json.load(open(f))
+        r = json.load(open(f, encoding="utf-8"))
         print("=" * 100, "\n", r["id"])
         for ti, t in enumerate(r["turns"]):
             tools = Counter(c["tool"] for c in t["tools"])

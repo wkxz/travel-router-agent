@@ -10,6 +10,7 @@
 """
 
 import json
+import re
 from typing import Annotated, Any, Dict, List, Optional
 
 from agents import RunContextWrapper, function_tool
@@ -105,8 +106,9 @@ def _search(ctx: RunContextWrapper, *, city: str, keywords: str, types: str, nea
             radius: int, offset: int, meal_type: str = "") -> List[dict]:
     """检索 POI 并写入仓库；返回不含坐标的摘要列表。出错时抛 ValueError（消息可直接转告用户）。"""
     repo = _repo(ctx)
-    params = {"city": city, "keywords": keywords, "types": types, "offset": offset, "page": 1,
-              "extensions": "all"}
+    params = {"city": city, "keywords": keywords, "offset": offset, "page": 1, "extensions": "all"}
+    if types:
+        params["types"] = types
     if near_id:
         center, err = repo.get(near_id)
         if not center:
@@ -211,6 +213,13 @@ def search_scenic_spots(
     try:
         spots = _search(ctx, city=city, keywords=keywords, types=SPOT_TYPES, near_id=near_id,
                         radius=15000, offset=6)
+        # 点名的地点不在景点类目时（实测南京先锋书店是 061205 书店），按类目只能搜到名字不相干的「骏惠书屋」，
+        # 模型会拿它顶替。名字都对不上关键词时不限类目再搜一次，只保留名字对得上的，排在前面
+        core = re.split(r"[（(\s]", keywords.strip())[0]
+        if core and not any(core in s["name"] for s in spots):
+            named = [s for s in _search(ctx, city=city, keywords=keywords, types="", near_id=near_id,
+                                        radius=15000, offset=6) if core in s["name"]]
+            spots = named + [s for s in spots if s["id"] not in {n["id"] for n in named}]
     except ValueError as e:
         return _dumps({"error": str(e)})
     if not spots:
@@ -258,7 +267,7 @@ def generate_trip_itinerary(
     hotel_id: Annotated[str, "住宿地 id（geocode_location 或搜索结果）；用户未说明住宿时留空，算法会按景点中心估算"] = "",
     departure_id: Annotated[str, "返程火车站或机场的 id（geocode_location 返回）；用户未说明可留空"] = "",
     start_date: Annotated[str, "出行起始日期 'YYYY-MM-DD'，用于自动核验闭馆日"] = "",
-    pace: Annotated[str, "游玩节奏：'relaxed'(轻松慢游，每日≤2点) | 'balanced'(均衡标准，每日≤3点) | 'compact'(特种兵打卡，每日≤4点)"] = "balanced",
+    pace: Annotated[str, "游玩节奏：'relaxed'(轻松慢游，白天每日≤2点) | 'balanced'(均衡标准，白天每日≤3点) | 'compact'(特种兵打卡，白天每日≤4点)；晚餐后的夜游另加 1 个"] = "balanced",
     departure_time: Annotated[str, "返程车次/航班出发时间 'HH:MM'（如「15:30」），用于保证最后一天提前到站；用户未说明可留空"] = "",
     must_eat: Annotated[str, "用户点名要吃的美食，逗号分隔（如用户说想吃 A 和 B，就传「A,B」）；"
                              "算法优先安排、全程只排一次；排不进的会在 plan.unmet_must_eat 里说明原因。用户没点名就留空"] = "",
