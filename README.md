@@ -1,84 +1,95 @@
-# travel-route-agent
+# 旅游路线与必吃推荐助手
 
-旅游路线生成 + 必吃推荐 Agent
+说出「想去的地方 + 想吃的东西 + 玩几天」，生成一份**可以直接照着走**的行程单：
+每天去哪、按什么顺序、怎么过去、几点在哪家店吃什么，返程日按车次倒推、保证赶得上车。
 
-输入「想去的地方 + 想吃的东西 + 玩几天」→ 输出一份可直接照着走的行程单。
+> 例：「杭州玩 2 天，下周六出发，想去西湖、雷峰塔和西溪湿地，想吃片儿川和西湖醋鱼，住武林广场附近，
+> 第二天傍晚 18:30 杭州东站的高铁回去。」
 
-**状态：功能完整，可本地运行（桌面与手机浏览器）；已用 10 条真实提示词做过多轮测评（见 `eval/`）。尚未部署。**
+## 特点
 
-## 核心设计
+- **行程走得通**：行程表由确定性排程引擎生成并经独立校验器复核，大模型只负责理解需求和解读结果，
+  不会出现闭馆时去参观、饭点排在 40 分钟车程外、赶不上返程车这类问题。
+- **真实数据**：地点、评分、人均、营业时间、天气、路网通勤全部来自高德实时接口。
+- **分天不折返**：穷举所有分天方案，兼顾通勤最短、每天负荷均衡、营业时段与闭馆日。
+- **餐饮双轨**：正餐、特色小吃、夜市分别安排；按绕路距离就近挑店；支持忌口与人均预算。
+- **必吃优先**：点名要吃的菜顺路时优先安排，卡片上标明哪一餐满足；实在排不进会说明原因。
+- **细节到位**：按出行当天取营业时段（含星期、节假日、季节段），隔水绕行提示，宜早去 / 夜游时段，
+  返程日告别餐提前，用户点名的景点优先保留。
+- **多轮修改**：「把雷峰塔换成西溪湿地，其他不变」这类追问只改对应部分。
+- 桌面与手机浏览器均可使用，界面支持中英切换。
 
-**LLM 只做意图理解、检索与解读；行程表由确定性 Python 排程引擎生成，并经独立校验器复核。**
-模型只能引用工具返回的 POI id，碰不到坐标、评分、营业时间，避免「看起来合理但走不通」的行程。
+## 技术栈
 
-```
-用户自然语言
-  → Agent（agents/chat/index.py）：意图解析、并行检索、准备参数
-  → 工具层（agents/_tools.py）：高德检索 / 地理编码 / 天气 / 排程
-  → 数据层（agents/_data/）：高德客户端（节流、限流重试、脱敏）、POI 仓库（按会话缓存）、路网通勤
-  → 排程引擎（agents/engine/）：分天（穷举 + 营业时段模拟）→ 时间轴 → 校验 → 渲染
-  → SSE plan 事件直接推给前端（src/components/TripPlanCard.tsx），不经模型转述
-```
-
-| 能力 | 实现 |
+| 层 | 技术 |
 |---|---|
-| 分天不折返 | 景点 ≤10 个时状态压缩 DP 穷举所有分法：通勤最短、负荷均衡、闭馆避让、营业时段走得通 |
-| 真实通勤 | 高德 `/v3/distance` 步行/驾车路网（按终点批量，起点 ≤100），取不到时回退估算并标注 |
-| 餐饮双轨 | 正餐 / 特色小吃 / 夜市；按「绕路距离」挑店；忌口、人均上限在引擎里过滤 |
-| 必吃 | 顺路时优先，绕路上限随剩余机会放宽；排不进时给出原因与补检索建议（gaps / next_step） |
-| 时段约束 | 宜早去、夜游（晚餐后窗口）、返程日按车次倒推（告别餐可提前）、博物馆闭馆日解析 |
-| 营业时间 | 按出行当天取适用时段：星期条款、节假日特殊日期、不写年份的季节段（可跨年）、全天关闭 |
-| 路网异常 | 路程远超直线（隔水、需轮渡）的路段标注提示；餐厅与空档景点不专程跨水 |
-| 掉点补救 | 真实车程比估算长导致某天放不下的景点，跨天对调后重排；用户点名的景点优先保留 |
-| 可靠性 | 工具失败返回具体原因；空回复自动重试一次；密钥不出现在任何返回给模型的文本里 |
+| 平台 | 腾讯云 EdgeOne Makers（前端托管 + Python Agent + 云函数） |
+| Agent | OpenAI Agents SDK（Python），OpenAI 兼容模型网关 |
+| 数据 | 高德 Web 服务 API |
+| 排程引擎 | 纯 Python（状态压缩 DP 分天、时间轴模拟、独立校验） |
+| 前端 | React 18 + Vite + TypeScript |
 
-## 目录
-
-```
-agents/
-  chat/index.py        Agent 定义、提示词（每次请求注入当天日期）、SSE 流
-  _tools.py            5 个工具；generate_trip_itinerary 返回 plan + gaps + next_step
-  _data/               amap.py（高德客户端）、poi_repo.py、routing.py（路网）、trip_input.py
-  engine/              scheduler / calendar_pack（分天）/ timeline / validator / travel / renderer
-cloud-functions/       会话列表、历史、删除（EdgeOne 云函数）
-src/                   React 前端
-tests/                 单元与回归测试（195 个，不联网）
-eval/                  真实环境测评：run_eval.py / analyze.py / compare.py
-docs/                  需求分析、数据源调研、实测记录
-```
-
-## 本地运行
-
-Windows 上 `edgeone makers dev` 会卡死，用手工构建 + uvicorn（详见 `HANDOFF.md` §5.3）：
+## 快速开始
 
 ```bash
-# 1. 依赖与密钥：.env 里填 AI_GATEWAY_API_KEY / AI_GATEWAY_BASE_URL / AI_GATEWAY_MODEL / AMAP_API_KEY
+# 1. 安装依赖
+python -m venv .venv
 ./.venv/Scripts/python.exe -m pip install -r requirements.txt
+npm install
 
-# 2. 构建（找不到 EdgeOne 模板时设置 EDGEONE_AGENT_TEMPLATE；已构建过则只重建业务代码）
+# 2. 配置密钥：复制 .env.example 为 .env，填写 AI_GATEWAY_* 与 AMAP_API_KEY
+
+# 3. 构建并启动 Agent（8088）
 ./.venv/Scripts/python.exe local-build-agent.py
+bash local-dev.sh                  # PowerShell：./local-dev.ps1
 
-# 3. 启动 agent（8088）与前端（5173）；PowerShell 下可用 local-dev.ps1 代替 local-dev.sh
-bash local-dev.sh
+# 4. 启动前端（http://localhost:5173）
 npx vite --config vite.config.local.ts
 ```
 
-改了 `agents/` 下的代码后要重新执行第 2 步，`.edgeone/` 里是构建副本。
+详细步骤与常见问题见 [开发指南](docs/DEVELOPMENT.md)。
 
-## 测试与测评
+## 部署
+
+推送到 GitHub 后在 EdgeOne Makers 导入仓库，配置 4 个环境变量即可，之后每次推送自动部署。
+完整步骤、环境变量说明与部署后验证见 [部署指南](docs/DEPLOYMENT.md)。
+
+## 测试
 
 ```bash
-# 单元 / 回归测试（不联网）
-./.venv/Scripts/python.exe -m unittest discover -s tests -t .
-
-# 真实环境测评（会产生模型与高德调用费用）
-./.venv/Scripts/python.exe eval/run_eval.py eval/results
-./.venv/Scripts/python.exe eval/analyze.py eval/results
-./.venv/Scripts/python.exe eval/compare.py <旧结果目录> eval/results
+./.venv/Scripts/python.exe -m unittest discover -s tests -t .   # 195 个用例，不联网
+npm run build                                                   # 类型检查 + 生产构建
 ```
+
+`eval/` 提供 10 条真实提示词的端到端测评（会产生调用费用），见 [开发指南](docs/DEVELOPMENT.md#5-真实环境测评)。
+
+## 项目结构
+
+```
+agents/
+  chat/                Agent 定义、提示词、SSE 流（/chat、/chat/stop）
+  _tools.py            5 个工具：地理编码、天气、景点检索、餐饮检索、行程生成
+  _data/               高德客户端（节流、重试、脱敏）、POI 缓存、路网通勤、参数转换
+  engine/              排程引擎：分天、时间轴、营业时间、校验、渲染
+cloud-functions/       会话列表、历史、删除
+src/                   React 前端
+tests/                 单元与回归测试
+eval/                  真实环境测评脚本
+docs/                  开发、部署、架构文档
+```
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 环境搭建、本地运行、测试与测评、开发约定、常见问题 |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | EdgeOne Makers 部署、环境变量、访问与验证、更新与回退 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 设计原则、请求链路、工具、排程引擎算法与参数依据、数据源 |
+| [docs/API-RESEARCH.md](docs/API-RESEARCH.md) | 数据源调研与实测结果 |
 
 ## 已知限制
 
-- 本地前端代理只转发 `/chat` 与 `/chat/stop`，会话列表 / 历史等云函数接口本地不可用（部署后正常）
-- 云函数按前端传来的 `user_id` 区分用户，没有鉴权（沿用模板）
-- 景点超过 10 个时分天退回启发式算法，不保证最优
+- 本地开发时会话列表、历史等云函数接口不可用（部署后正常）。
+- 云函数按前端传来的 `user_id` 区分用户，没有登录鉴权。
+- 景点超过 10 个时分天退回启发式算法，不保证最优。
+- 行程卡片内容固定为中文。

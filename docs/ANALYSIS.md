@@ -1,6 +1,6 @@
 # 旅游路线生成 + 必吃推荐 Agent｜产品与技术分析
 
-> 状态：2026-10-20 的分析阶段文档（当时尚未编码）。实现现状与架构见 `README.md`，设计取舍见 `HANDOFF.md` §11。
+> 状态：2026-10-20 的分析阶段文档（当时尚未编码）。实现现状见 `README.md`，实际架构与设计取舍见 `docs/ARCHITECTURE.md`。
 > 创建日期：2026-10-20
 > 参考案例：`travel-decision-agent`（EdgeOne Makers + OpenAI Agents SDK + 高德 Web 服务 API）
 

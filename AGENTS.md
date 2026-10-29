@@ -1,39 +1,29 @@
 # AGENTS.md
 
-本文件是 Agent 进入本工作目录时的第一入口。**开工前先读 `README.md`（现状与架构），再读 `HANDOFF.md`（环境与踩坑）。**
+给在本仓库工作的 AI 编程助手的说明。开工前先读 `README.md`，再按需读 `docs/` 下的文档：
 
-## 这是什么项目
+- `docs/DEVELOPMENT.md`：环境、本地运行、测试与测评、开发约定、常见问题
+- `docs/DEPLOYMENT.md`：EdgeOne Makers 部署
+- `docs/ARCHITECTURE.md`：设计原则、排程引擎算法与参数依据（改引擎前先看）
 
-**旅游路线生成 + 必吃推荐 Agent**（用户的学生期末项目）。
+## 现状
 
-输入「想去的地方 + 想吃的东西 + 玩几天」→ 输出一份可直接照着走的行程单。
+功能完整、可本地运行，尚未部署。代码在 `master` 分支，远程仓库 https://github.com/wkxz/travel-router-agent 。
 
-## 现状（2026-10-29）
+## 不可违背的规则
 
-**功能完整、可本地运行，尚未部署。** 后端 `agents/`、前端 `src/`、云函数 `cloud-functions/` 都已实现；
-`tests/` 有 195 个不联网的单元/回归测试，`eval/` 有 10 条真实提示词的测评脚本。
-代码在 `master` 分支，远程仓库 https://github.com/wkxz/travel-router-agent 。
-
-本项目独立运行，不依赖其他项目。早期用于抄写法的项目 A（travel-decision-agent）副本 `reference/`
-已于 2026-10-29 删除；项目 A 原件 `_tools.py` 会把含高德 Key 的 URL 拼进错误信息，需要用户自己去修。
-
-## 三条不可违背的规则
-
-1. **密钥只从环境变量读**，绝不硬编码、绝不打印、绝不提交。
-   `.env` 必须先在 `.gitignore` 里。不要读取项目 A 的 `.env` 后打印内容。
-
+1. **密钥只从环境变量读**，绝不硬编码、绝不打印、绝不提交。`.env` 已在 `.gitignore` 中。
 2. **`git push`、部署、删除文件必须先问用户**，不要自作主张执行。
+3. **行程表由确定性 Python 生成，不由 LLM 直接写。** LLM 只做意图理解、检索与最终解读，
+   理由见 `docs/ARCHITECTURE.md`「设计原则」。
 
-3. **行程表由确定性 Python 生成，不由 LLM 直接写。**
-   LLM 只做意图理解与最终解读。理由见 `docs/ANALYSIS.md` 第 5 节 ——
-   LLM 直接写必然产出「看起来合理但根本走不通」的行程，这是本项目最大风险。
+## 改代码的流程
 
-## 开工顺序
-
-1. 读 `README.md`（架构、目录、运行、测试）
-2. 读 `HANDOFF.md`（§5 环境与本地运行、§6 踩坑清单、§11 排程引擎的设计取舍）
-3. 改代码前后都跑 `python -m unittest discover -s tests -t .`；改了排程或提示词，用 `eval/` 实测对比
-4. 改了 `agents/` 后要重新 `python local-build-agent.py`，本地服务跑的是 `.edgeone/` 里的构建副本
+1. 改代码前后都跑 `./.venv/Scripts/python.exe -m unittest discover -s tests -t .`；
+   修 bug 先写能复现的测试，并确认撤掉修复后它会失败。
+2. 改了 `agents/` 后要重新执行 `local-build-agent.py` 并重启服务：本地服务跑的是 `.edgeone/` 里的构建副本。
+3. 改了排程引擎或提示词，用 `eval/` 实测并与上一轮对比（会产生费用，先问用户）。
+4. 改了前端，跑 `npx tsc --noEmit -p .`，并在浏览器里实际验证（含手机宽度）。
 
 ## 用户偏好
 
@@ -46,9 +36,9 @@
 
 | 项 | 值 |
 |---|---|
-| 技术栈 | EdgeOne Makers + OpenAI Agents SDK + 高德 Web API |
-| 本地开发 | `edgeone makers dev` 在 Windows 上会卡死 → 用手工构建 + uvicorn（HANDOFF §5.3） |
+| 本地开发 | `edgeone makers dev` 在 Windows 上会卡死 → 手工构建 + uvicorn（`docs/DEVELOPMENT.md` 第 3 节） |
 | 本机代理 | `curl` 本机服务必须加 `--noproxy '*'` |
+| 测试用的 Python | 必须用 `.venv`，系统 Python 没装 `openai-agents` |
 | 必吃数据源 | 高德 POI 传 `extensions=all` 才有 `biz_ext`（评分/人均/营业时间） |
 | 关键词检索 | 必须带 `citylimit=true`，否则 city=南京 搜「西湖」返回的全是杭州 |
 | 高德限流 | 10019~10022 都是 QPS 超限，要退避重试；`/v3/distance` 起点最多 100 个，超出静默丢弃 |
