@@ -76,7 +76,8 @@ class TestCuisineDedup(unittest.TestCase):
               Restaurant(name="高分餐厅2", lng=104.0817, lat=30.6559, meal_type="meal", rating=4.9),
               Restaurant(name="普通甜水面", lng=104.0818, lat=30.6559, meal_type="meal", rating=4.2, dish_key="甜水面")]
         plan = TripScheduler("成都", 1, CHUNXI).schedule([Spot(name="太古里", lng=104.083, lat=30.655)], rs)
-        self.assertTrue(any("甜水面" in it.title for it in _items(plan, "meal")))
+        meal = [it for it in _items(plan, "meal") if "甜水面" in it.title][0]
+        self.assertTrue(meal.description.startswith("满足必吃「甜水面」"), meal.description)  # 卡片上看得出是哪餐兑现必吃
 
     def test_generic_cuisine_not_treated_as_duplicate(self):
         rs = [Restaurant(name=f"中餐馆{i}", lng=104.0815 + 0.001 * i, lat=30.6558, meal_type="meal",

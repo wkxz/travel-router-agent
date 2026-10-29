@@ -598,10 +598,10 @@ function AppInner() {
                 type="button"
                 className={`${styles.devToggleBtn} ${showDevPanel ? styles.devToggleBtnActive : ''}`}
                 onClick={() => setShowDevPanel(prev => !prev)}
-                title="切换调试面板与源码"
+                title={t("dev.title")}
               >
                 <span>{showDevPanel ? '✕' : '{ }'}</span>
-                <span>{showDevPanel ? '收起调试' : '调试与源码'}</span>
+                <span>{showDevPanel ? t("dev.close") : t("dev.open")}</span>
               </button>
             </div>
           </header>

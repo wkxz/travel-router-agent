@@ -16,6 +16,11 @@ const en = {
   "preset.1": "Plan a 3-day trip to Chengdu visiting Panda Base, Kuanzhai Alley and Jinli, with authentic hotpot and local snacks, staying near Chunxi Road.",
   "preset.2": "2-day trip to Beijing visiting Forbidden City, Temple of Heaven, Summer Palace. Craving Peking duck and traditional snacks without backtracking.",
 
+  // Debug panel toggle
+  "dev.open": "Debug & Source",
+  "dev.close": "Hide Debug",
+  "dev.title": "Toggle debug panel and source",
+
   // Tool indicators
   "tool.geocode": "Geocode",
   "tool.weather": "Weather",

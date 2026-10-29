@@ -25,6 +25,21 @@ class TestHoursOnDate(unittest.TestCase):
         self.assertEqual(hours_on_date(closed, date(2026, 2, 17)), CLOSED_MARK)
         self.assertEqual(hours_on_date(closed, TUE), "11:00-21:00")
 
+    def test_seasonal_ranges_without_year(self):
+        # 2026-10-28 杭州实测（雷峰塔 / 西溪湿地高德原文节选）：旧逻辑认不出不带年份的日期段，把三季时刻并成 08:00-20:00
+        leifeng = ("03-16至04-30 周一至周日 08:00-19:00；05-01至10-31 周一至周日 08:00-20:00；"
+                   "11-01至03-15 周一至周日 08:00-17:30")
+        self.assertEqual(hours_on_date(leifeng, date(2026, 11, 7)), "08:00-17:30")  # 实测出行日，11-01 起冬季
+        self.assertEqual(hours_on_date(leifeng, date(2027, 1, 10)), "08:00-17:30")  # 跨年
+        self.assertEqual(hours_on_date(leifeng, date(2026, 3, 20)), "08:00-19:00；")
+        self.assertEqual(hours_on_date(leifeng, FRI), "08:00-20:00；")
+        xixi = "10月8日至3月31日 周一至周日 08:00-17:30"
+        self.assertEqual(hours_on_date(xixi, date(2026, 11, 7)), "08:00-17:30")
+        self.assertEqual(hours_on_date(xixi, date(2027, 2, 1)), "08:00-17:30")
+
+    def test_time_range_not_mistaken_for_date(self):
+        self.assertEqual(hours_on_date("08:00-17:30至20:00", TUE), "08:00-17:30至20:00")
+
     def test_day_not_listed_is_closed(self):
         self.assertEqual(hours_on_date("周二至周日 09:00-17:00", date(2026, 10, 26)), CLOSED_MARK)
         self.assertEqual(hours_on_date("09:00-17:00 周一闭馆", date(2026, 10, 26)), CLOSED_MARK)
@@ -135,6 +150,25 @@ class TestMealVenueType(unittest.TestCase):
         shops = [Restaurant(name="鲜花饼屋", lng=114.302, lat=30.582, meal_type="meal", rating=4.5,
                             category="餐饮服务;糕饼店;糕饼店", dish_key="鲜花饼")]
         self.assertTrue(any("鲜花饼屋" in t for t in self._dinner(shops)))
+
+
+class TestSnackNotFullRestaurant(unittest.TestCase):
+    def _snacks(self, shops):
+        spots = [Spot(name="景点", lng=114.301, lat=30.581, duration_minutes=60),
+                 Spot(name="景点2", lng=114.304, lat=30.583, duration_minutes=60)]
+        plan = TripScheduler("某市", 1, HOTEL, start_date=TUE.isoformat()).schedule(spots, shops)
+        return [it.title for it in plan.days[0].items if it.category == "snack"]
+
+    def test_pricey_snack_candidate_skipped(self):
+        shops = [Restaurant(name="正式中餐厅", lng=114.302, lat=30.582, meal_type="snack", rating=4.9, cost=81),
+                 Restaurant(name="街边小吃", lng=114.303, lat=30.582, meal_type="snack", rating=4.2, cost=20)]
+        snacks = self._snacks(shops)
+        self.assertTrue(snacks and "正式中餐厅" not in snacks[0], snacks)
+
+    def test_named_must_eat_snack_kept(self):
+        shops = [Restaurant(name="老字号点心", lng=114.302, lat=30.582, meal_type="snack", rating=4.5, cost=81,
+                            dish_key="点心")]
+        self.assertTrue(any("老字号点心" in t for t in self._snacks(shops)))
 
 
 if __name__ == "__main__":

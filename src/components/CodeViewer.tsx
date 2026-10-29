@@ -71,7 +71,7 @@ export default function CodeViewer() {
           </L>
           <L n={9} />
           <L n={10}>
-            <Va t="TOOLS" /><Op t=" = [" /><Fn t="geocode" /><Op t=", " /><Fn t="weather" /><Op t=", " /><Fn t="spots" /><Op t=", " /><Fn t="food" /><Op t=", " /><Fn t="schedule_engine" /><Op t="]" />
+            <Va t="TOOLS" /><Op t=" = [" /><Fn t="geocode_location" /><Op t=", " /><Fn t="get_city_weather" /><Op t=", " /><Fn t="search_scenic_spots" /><Op t=", " /><Fn t="search_food_and_snacks" /><Op t=", " /><Fn t="generate_trip_itinerary" /><Op t="]" />
           </L>
           <L n={11} />
 
@@ -116,7 +116,7 @@ export default function CodeViewer() {
             <I1><Va t="agent" /><Op t=" = " /><Ty t="Agent" /><Op t="(" /></I1>
           </L>
           <L n={25}>
-            <I2><Va t="name" /><Op t="=" /><Str t='"出行决策助手"' /><Op t="," /></I2>
+            <I2><Va t="name" /><Op t="=" /><Str t='"旅游路线与必吃推荐助手"' /><Op t="," /></I2>
           </L>
           <L n={26}>
             <I2><Va t="instructions" /><Op t="=" /><Va t="INSTRUCTIONS" /><Op t="," /></I2>

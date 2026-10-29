@@ -16,6 +16,11 @@ const zh = {
   "preset.1": "去成都玩 3 天，想去宽窄巷子、大熊猫基地、锦里，想吃地道老火锅和特色小吃，住春熙路附近。",
   "preset.2": "想去北京玩 2 天，想去故宫、天坛和颐和园，想吃烤鸭和北京小吃，怎么安排路线不绕路？",
 
+  // Debug panel toggle
+  "dev.open": "调试与源码",
+  "dev.close": "收起调试",
+  "dev.title": "切换调试面板与源码",
+
   // Tool indicators
   "tool.geocode": "位置解析",
   "tool.weather": "天气查询",

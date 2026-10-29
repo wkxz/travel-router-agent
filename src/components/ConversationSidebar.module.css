@@ -308,3 +308,17 @@
     -webkit-line-clamp: 1;
   }
 }
+@media (max-width: 640px) {
+  .sidebar {
+    flex: 0 0 auto;
+    border-right: none;
+    border-bottom: 1px solid rgba(226, 232, 240, 0.85);
+  }
+  .head {
+    padding-right: 104px; /* 给右上角固定的中英切换按钮让位 */
+  }
+  .listShell,
+  .foot {
+    display: none;
+  }
+}

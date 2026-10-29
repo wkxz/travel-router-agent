@@ -309,7 +309,7 @@ def generate_trip_itinerary(
             "city": city, "days": total_days, "pace": pace, "hotel": hotel_id, "must_eat": must_eat,
             "avoid": avoid, "max_cost": budget,
             "departure": [departure_id, departure_time],
-            "spots": [[s.poi_id, s.name, s.duration_minutes, s.best_period] for s in inputs.spots],
+            "spots": [[s.poi_id, s.name, s.duration_minutes, s.best_period, s.must_visit] for s in inputs.spots],
             "backups": [b.poi_id for b in inputs.backups],
             "foods": len(inputs.restaurants), "skipped": inputs.skipped,
         }))

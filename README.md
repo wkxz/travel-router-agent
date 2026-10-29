@@ -39,7 +39,7 @@ agents/
   engine/              scheduler / calendar_pack（分天）/ timeline / validator / travel / renderer
 cloud-functions/       会话列表、历史、删除（EdgeOne 云函数）
 src/                   React 前端
-tests/                 单元与回归测试（188 个，不联网）
+tests/                 单元与回归测试（195 个，不联网）
 eval/                  真实环境测评：run_eval.py / analyze.py / compare.py
 docs/                  需求分析、数据源调研、实测记录
 reference/             参考项目（项目 A）的只读副本，不要修改

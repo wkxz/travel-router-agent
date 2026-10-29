@@ -212,3 +212,31 @@
   border-color: var(--accent-gold);
   background: rgba(13, 148, 136, 0.1);
 }
+
+/* ── 手机竖屏：去掉外框，侧栏收成顶部一条（见 ConversationSidebar.module.css） ── */
+@media (max-width: 640px) {
+  .stage {
+    flex-direction: column;
+    width: 100vw;
+    height: 100dvh;
+    border-radius: 0;
+    border: none;
+  }
+  .chatPanel {
+    min-height: 0; /* 纵向排列时让消息区内部滚动，输入框留在屏幕底部 */
+  }
+  .header {
+    padding: 10px 14px;
+    gap: 8px;
+  }
+  .subtitle {
+    display: none;
+  }
+  .headerRight {
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .codePanel {
+    width: 100vw;
+  }
+}
