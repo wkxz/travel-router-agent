@@ -15,6 +15,9 @@ class LocationPoint:
     lat: float
     address: str = ""
     poi_id: str = ""
+    # 大型景区（玄武湖、西湖、圆明园等）的出入口；非空时通勤一律按最近的出入口算，不用几何中心点。
+    # 几何中心可能在湖心或山里，离实际进出的门区几公里（实测西湖中心点与导航入口相距约 3km）
+    gates: List["LocationPoint"] = field(default_factory=list)
 
     @property
     def location_str(self) -> str:

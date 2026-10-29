@@ -85,8 +85,8 @@ class TestItineraryTool(ToolTestCase):
         res = call(tools.generate_trip_itinerary, fresh, city="南京", total_days=1,
                    spots='["B0LAKE"]', foods='["B0SNACK"]', hotel_id=hotel, start_date="2026-10-27")
         self.assertTrue(res["success"], res)
-        # 只看 id 回查；/distance 是排程时的路网请求，另有测试覆盖
-        self.assertEqual(sorted(p for p, _ in self.fake.calls[n_before:] if p != "/distance"),
+        # 只看 id 回查；/distance 是排程时的路网请求，/v5/place/detail 是景区门区查询，另有测试覆盖
+        self.assertEqual(sorted(p for p, _ in self.fake.calls[n_before:] if p not in ("/distance", "/v5/place/detail")),
                          ["/geocode/geo", "/place/detail", "/place/detail"])
 
     def test_fabricated_spot_reported_as_unassigned(self):

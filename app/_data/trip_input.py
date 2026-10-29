@@ -53,6 +53,7 @@ def to_spot(rec: PoiRecord, ref: dict, default_duration: int) -> Spot:
         open_time=rec.open_time, rating=rec.rating, cost=rec.cost, tags=list(rec.tags),
         best_period=period if period in ("morning", "evening") else "",
         must_visit=ref.get("must") in (True, "true", "True", 1, "1"),
+        gates=[LocationPoint(name=name, lng=lng, lat=lat) for name, lng, lat in rec.gates],
     )
 
 
@@ -128,13 +129,13 @@ def build_trip_inputs(
             out.skipped.append(f"{ref['id']}（{err}）")
         elif rec.id not in seen:
             seen.add(rec.id)
-            out.spots.append(to_spot(rec, ref, default_duration=120))
+            out.spots.append(to_spot(repo.with_gates(rec), ref, default_duration=120))
 
     for ref in parse_refs(backup_spots):
         rec, _ = repo.get(ref["id"])  # 备选景点用不上也不算未安排，识别失败直接忽略
         if rec and rec.id not in seen:
             seen.add(rec.id)
-            out.backups.append(to_spot(rec, ref, default_duration=60))
+            out.backups.append(to_spot(repo.with_gates(rec), ref, default_duration=60))
 
     avoid_words = split_must_eat(avoid)
     by_diet, by_cost, unknown_cost = [], [], 0

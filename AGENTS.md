@@ -43,6 +43,7 @@
 | 本机代理 | `curl` 本机服务必须加 `--noproxy '*'` |
 | 测试用的 Python | 必须用 `.venv`，系统 Python 没装 `openai-agents` |
 | 必吃数据源 | 高德 POI 传 `extensions=all` 才有 `biz_ext`（评分/人均/营业时间） |
+| 大型景区 | 通勤按门区算（`Spot.gates`），距离一律用 `engine.geo.place_distance`，不要直接对景点坐标调 `haversine_distance` |
 | 关键词检索 | 必须带 `citylimit=true`，否则 city=南京 搜「西湖」返回的全是杭州 |
 | 高德限流 | 10019~10022 都是 QPS 超限，要退避重试；`/v3/distance` 起点最多 100 个，超出静默丢弃 |
 | 不可用的数据源 | Wikipedia 系（被墙）、大众点评/美团（无公开 API） |

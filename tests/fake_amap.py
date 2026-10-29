@@ -27,6 +27,15 @@ FOODS = {
         "biz_ext": {"rating": [], "cost": "12.00", "open_time": "", "opentime2": "周一至周日 09:00-20:00"},
     },
 }
+# 仿 v5 /place/detail?show_fields=children：取自 2026-10-29 玄武湖景区实测响应（节选）
+CHILDREN = {
+    "B0LAKE": [
+        {"name": "玄武湖景区主游客中心", "typecode": "070201|200300", "location": "118.812702,32.066116"},
+        {"name": "玄武湖景区(玄武门)", "subtype": "门", "typecode": "991401", "location": "118.787506,32.070519"},
+        {"name": "玄武湖景区(解放门)", "subtype": "门", "typecode": "991400", "location": "118.796638,32.062228"},
+        {"name": "玄武湖公园内部停车场", "subtype": "停车场", "typecode": "150905", "location": "118.806768,32.075273"},
+    ],
+}
 PLACES = {
     "新街口": "118.784400,32.041600",
     "南京南站": "118.798300,31.969600",
@@ -69,6 +78,9 @@ class FakeAmap:
         if path == "/place/detail":
             p = {**SPOTS, **FOODS}.get(params["id"])
             return {"status": "1", "pois": [p] if p else []}
+        if path == "/v5/place/detail":
+            p = {**SPOTS, **FOODS}.get(params["id"])
+            return {"status": "1", "pois": [{**p, "children": CHILDREN.get(p["id"], [])}] if p else []}
         if path == "/distance":
             return _fake_distance(params)
         if path == "/geocode/geo":

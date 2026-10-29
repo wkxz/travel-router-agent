@@ -16,7 +16,7 @@ from .models import (
     FullTripPlan,
 )
 from .geo import (
-    haversine_distance,
+    place_distance,
     minutes_to_hhmm,
     parse_time_to_minutes,
     find_open_slot,
@@ -215,10 +215,10 @@ class TripScheduler:
         """
         def detour(r: Restaurant) -> float:
             if next_stop is None:
-                return haversine_distance(anchor.lng, anchor.lat, r.lng, r.lat)
-            return (haversine_distance(origin.lng, origin.lat, r.lng, r.lat)
-                    + haversine_distance(r.lng, r.lat, next_stop.lng, next_stop.lat)
-                    - haversine_distance(origin.lng, origin.lat, next_stop.lng, next_stop.lat))
+                return place_distance(anchor, r)
+            return (place_distance(origin, r)
+                    + place_distance(r, next_stop)
+                    - place_distance(origin, next_stop))
 
         def open_status(r: Restaurant) -> Optional[bool]:
             start = max(now + self.travel.estimate(origin, r).minutes, earliest)
@@ -230,7 +230,7 @@ class TripScheduler:
             and not (exclude and r.name in exclude)
             and r.meal_type in meal_types
             # 离当前位置近，或者就在去下一站的路上（如回住处途中），都不算专程绕路
-            and (haversine_distance(anchor.lng, anchor.lat, r.lng, r.lat) <= MAX_MEAL_DIST_KM
+            and (place_distance(anchor, r) <= MAX_MEAL_DIST_KM
                  or (next_stop is not None and detour(r) <= ON_THE_WAY_KM))
             # 离当前位置近但方向相反、绕路过大的也不要：宁可「周边自选」并写进缺口清单
             and (next_stop is None or detour(r) <= MAX_MEAL_DETOUR_KM)
@@ -313,8 +313,8 @@ class TripScheduler:
                 day.add_lunch(next_stop=day.after_lunch_target())
             # 夜游景点比住处更近时就别回去了，傍晚直接过去
             dinner_at = day.dinner_time()
-            if not (evening and haversine_distance(day.loc.lng, day.loc.lat, evening[0].lng, evening[0].lat)
-                    <= haversine_distance(day.loc.lng, day.loc.lat, self.hotel.lng, self.hotel.lat)):
+            if not (evening and place_distance(day.loc, evening[0])
+                    <= place_distance(day.loc, self.hotel)):
                 day.maybe_return_to_hotel(dinner_at - 15)
                 dinner_at = day.dinner_time()  # 回住处后离车站的路程变了，告别餐时间要重算
             if dinner_at >= DINNER_DEFAULT:  # 告别餐提前时不再加下午小吃，免得两顿挨着
@@ -492,7 +492,7 @@ class TripScheduler:
                 result.append(f"{dish}（候选餐厅里没有与「{dish}」相关的店，需先用该美食名检索）")
                 continue
             dist, nearest = min(
-                (min(haversine_distance(p.lng, p.lat, r.lng, r.lat) for p in route), r) for r in cands
+                (min(place_distance(p, r) for p in route), r) for r in cands
             ) if route else (float("inf"), cands[0])
             if dist > MAX_MEAL_DIST_KM:
                 result.append(f"{dish}（检索到的 {len(cands)} 家店离行程路线都超过 {MAX_MEAL_DIST_KM:g} 公里，"
@@ -615,7 +615,7 @@ class _DayBuilder:
             if ((c.best_period == "evening" and self.evening_ok and c.name not in self.demoted)
                     or c.name in self.gap_rejected or is_spot_closed_on_date(c, self.date)[0]):
                 continue
-            dist = haversine_distance(self.loc.lng, self.loc.lat, c.lng, c.lat)
+            dist = place_distance(self.loc, c)
             if dist > GAP_SPOT_MAX_KM:
                 continue
             t_min = self.s.travel.estimate(self.loc, c).minutes  # 筛选用估算；add_spot 再按真实路段复核
@@ -640,7 +640,7 @@ class _DayBuilder:
         until, rushing = self._gap_until(until)
         if rushing or until - self.t < GAP_RETURN_MIN or self.loc is hotel:
             return
-        if haversine_distance(self.loc.lng, self.loc.lat, hotel.lng, hotel.lat) <= HOTEL_NEAR_KM:
+        if place_distance(self.loc, hotel) <= HOTEL_NEAR_KM:
             return
         if (self.s.pace != "relaxed" and self._best_gap_spot(until)
                 and len(self.spot_names) + self.reserved_spots < self.s.max_spots_per_day):
@@ -702,7 +702,7 @@ class _DayBuilder:
         if gap < GAP_FILL_MIN:
             return "时间不长，可在附近稍作休息、喝杯茶，或随意逛逛周边街巷。"
         hotel = self.s.hotel
-        hotel_dist = haversine_distance(self.loc.lng, self.loc.lat, hotel.lng, hotel.lat)
+        hotel_dist = place_distance(self.loc, hotel)
         if hotel_dist <= HOTEL_NEAR_KM:
             return "离住宿点不远，可以回酒店休息一下再出发；也可以在附近街区随意逛逛。"
         if len(self.spot_names) + self.reserved_spots >= self.s.max_spots_per_day or self.s.pace == "relaxed":

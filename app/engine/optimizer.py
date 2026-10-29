@@ -6,18 +6,16 @@
 
 from typing import List, Tuple
 from .models import LocationPoint, Spot
-from .geo import haversine_distance
+from .geo import place_distance
 
 
 def calculate_total_path_distance(start: LocationPoint, spots: List[Spot]) -> float:
     """计算从 start 依次访问 spots 的总球面距离 (km)。"""
     if not spots:
         return 0.0
-    total = haversine_distance(start.lng, start.lat, spots[0].lng, spots[0].lat)
+    total = place_distance(start, spots[0])
     for i in range(len(spots) - 1):
-        total += haversine_distance(
-            spots[i].lng, spots[i].lat, spots[i + 1].lng, spots[i + 1].lat
-        )
+        total += place_distance(spots[i], spots[i + 1])
     return total
 
 
@@ -34,9 +32,7 @@ def nearest_neighbor_sort(start: LocationPoint, spots: List[Spot]) -> List[Spot]
         nearest_idx = 0
         min_dist = float("inf")
         for idx, spot in enumerate(unvisited):
-            dist = haversine_distance(
-                current_pt.lng, current_pt.lat, spot.lng, spot.lat
-            )
+            dist = place_distance(current_pt, spot)
             if dist < min_dist:
                 min_dist = dist
                 nearest_idx = idx

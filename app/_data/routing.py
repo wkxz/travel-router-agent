@@ -8,15 +8,16 @@
 请求策略：按「终点」取一整列（所有已知地点 → 该终点），同一终点后续的查询直接命中缓存；
 直线距离已超过步行上限的，步行路程只会更长，跳过步行请求直接查驾车。
 取不到数据（限流、网络、Key 问题、超过请求上限）的路段回退为直线估算，并在描述和行程备注里标明。
+大型景区按最近的出入口请求（engine.geo.gate_pair），不用几何中心点。
 """
 
 import math
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from .amap import amap_get
-from ..engine.geo import haversine_distance, WALKING_MAX_ROAD_KM
+from ..engine.geo import access_points, gate_pair, haversine_distance, WALKING_MAX_ROAD_KM
 from ..engine.models import LocationPoint
-from ..engine.travel import Leg, TravelTimes, is_roundabout
+from ..engine.travel import Leg, TravelTimes, gate_note, is_roundabout
 
 Fetch = Callable[[str, dict], dict]
 
@@ -34,7 +35,7 @@ class AmapTravel(TravelTimes):
 
     def __init__(self, points: Iterable[LocationPoint], fetch: Optional[Fetch] = None):
         self._fetch = fetch
-        self._points: List[str] = list(dict.fromkeys(p.location_str for p in points))
+        self._points: List[str] = list(dict.fromkeys(g.location_str for p in points for g in access_points(p)))
         self._matrix: Dict[Tuple[str, str, str], Optional[Tuple[float, float]]] = {}
         self._legs: Dict[Tuple[str, str, str], Leg] = {}
         self.requests = 0
@@ -84,23 +85,25 @@ class AmapTravel(TravelTimes):
     # ---------- TravelTimes 接口 ----------
 
     def leg(self, a: LocationPoint, b: LocationPoint, mode: str = "auto") -> Leg:
-        o, d = a.location_str, b.location_str
-        key = (o, d, mode)
+        key = (a.location_str, b.location_str, mode)
         if key not in self._legs:
-            self._legs[key] = self._compute(a, b, o, d, mode)
+            self._legs[key] = self._compute(a, b, mode)
         return self._legs[key]
 
-    def _compute(self, a: LocationPoint, b: LocationPoint, o: str, d: str, mode: str) -> Leg:
+    def _compute(self, a: LocationPoint, b: LocationPoint, mode: str) -> Leg:
+        x, y = gate_pair(a, b)
+        note = gate_note(a, x, b, y)
+        o, d = x.location_str, y.location_str
         if o == d:
             return self.estimate(a, b, mode)  # 同一坐标（如景区内的餐厅），不必请求
-        straight_km = haversine_distance(a.lng, a.lat, b.lng, b.lat)
+        straight_km = haversine_distance(x.lng, x.lat, y.lng, y.lat)
 
         if mode == "walking" or (mode == "auto" and straight_km <= WALKING_MAX_ROAD_KM):
             walk = self._lookup(WALK, o, d)
             if walk and (mode == "walking" or walk[0] / 1000 <= WALKING_MAX_ROAD_KM):
                 km = walk[0] / 1000
                 minutes = max(MIN_WALK_MIN, math.ceil(walk[1] / 60))
-                return Leg(minutes, f"步行约 {minutes} 分钟 ({km:.1f} km)", round(km, 2), False)
+                return Leg(minutes, f"步行约 {minutes} 分钟 ({km:.1f} km){note}", round(km, 2), False)
 
         if mode != "walking":
             drive = self._lookup(DRIVE, o, d)
@@ -108,12 +111,12 @@ class AmapTravel(TravelTimes):
                 km = drive[0] / 1000
                 minutes = max(MIN_DRIVE_MIN, math.ceil(drive[1] / 60) + TAXI_WAIT_MIN)
                 odd = is_roundabout(straight_km, km)
-                desc = f"打车/驾车约 {minutes} 分钟 ({km:.1f} km)" + (ROUNDABOUT_NOTE if odd else "")
+                desc = f"打车/驾车约 {minutes} 分钟 ({km:.1f} km){note}" + (ROUNDABOUT_NOTE if odd else "")
                 return Leg(minutes, desc, round(km, 2), False, roundabout=odd)
 
         self._estimated_legs += 1
-        est = self.estimate(a, b, mode)
-        return Leg(est.minutes, est.desc + "（估算）", est.road_km, True)
+        est = self.estimate_between(x, y, mode)
+        return Leg(est.minutes, est.desc + "（估算）" + note, est.road_km, True)
 
     def notes(self) -> list:
         if not self._estimated_legs:

@@ -2,6 +2,7 @@
 
 引擎保持纯 Python、不访问网络：默认实现 TravelTimes 按直线距离估算（geo.estimate_transit）；
 真实路网数据（高德步行/驾车）由数据层子类注入，见 app/_data/routing.py。
+大型景区有出入口数据时，路段按两地最近的一对出入口计算（geo.gate_pair），并在描述里写明从哪个门进出。
 
 排程时的「候选筛选」（挑哪家餐厅、哪个空档景点）用 estimate，避免为每个候选都请求一次路网；
 真正写进时间轴的路段、返程赶车判断与校验器复核用 leg，二者取同一份数据，口径一致。
@@ -10,7 +11,7 @@
 from dataclasses import dataclass
 
 from .models import LocationPoint
-from .geo import haversine_distance, estimate_transit
+from .geo import haversine_distance, estimate_transit, gate_pair
 
 
 # 路网距离是直线的 3 倍以上、且多出 2km 以上时视为「绕行明显」：多半隔着海峡、江河、湖泊或封闭区域。
@@ -22,6 +23,16 @@ DETOUR_MIN_EXTRA_KM = 2.0
 
 def is_roundabout(straight_km: float, road_km: float) -> bool:
     return road_km >= straight_km * DETOUR_FACTOR and road_km - straight_km >= DETOUR_MIN_EXTRA_KM
+
+
+def gate_note(a: LocationPoint, x: LocationPoint, b: LocationPoint, y: LocationPoint) -> str:
+    """x、y 是 gate_pair(a, b) 选出的进出位置；是有名字的出入口时写进路段描述，如「，从「玄武门」进」。"""
+    parts = []
+    if x is not a and x.name:
+        parts.append(f"从「{x.name}」出")
+    if y is not b and y.name:
+        parts.append(f"从「{y.name}」进")
+    return "".join("，" + s for s in parts)
 
 
 @dataclass(frozen=True)
@@ -37,7 +48,14 @@ class TravelTimes:
     """默认实现：全部按直线距离估算。"""
 
     def estimate(self, a: LocationPoint, b: LocationPoint, mode: str = "auto") -> Leg:
-        dist = haversine_distance(a.lng, a.lat, b.lng, b.lat)
+        x, y = gate_pair(a, b)
+        leg = self.estimate_between(x, y, mode)
+        return Leg(leg.minutes, leg.desc + gate_note(a, x, b, y), leg.road_km, True)
+
+    @staticmethod
+    def estimate_between(x: LocationPoint, y: LocationPoint, mode: str = "auto") -> Leg:
+        """两个确定坐标之间的直线估算（不再挑出入口）。"""
+        dist = haversine_distance(x.lng, x.lat, y.lng, y.lat)
         minutes, desc = estimate_transit(dist, mode=mode)
         return Leg(minutes, desc, round(dist * 1.3, 2), True)
 

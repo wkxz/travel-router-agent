@@ -12,7 +12,8 @@ from typing import Any, Optional, Tuple
 
 import httpx
 
-AMAP_BASE = "https://restapi.amap.com/v3"
+AMAP_HOST = "https://restapi.amap.com"
+AMAP_BASE = f"{AMAP_HOST}/v3"
 TIMEOUT = 10.0
 
 MIN_INTERVAL = 0.35
@@ -51,7 +52,9 @@ def _throttle() -> None:
 
 
 def amap_get(path: str, params: dict, retries: int = 3) -> dict:
-    """统一高德 GET 请求：注入 Key、节流、QPS 限流退避重试、status 校验。"""
+    """统一高德 GET 请求：注入 Key、节流、QPS 限流退避重试、status 校验。
+
+    path 默认指 v3 接口（如 "/place/text"）；以 "/v5/" 开头时请求 v5 接口（如 "/v5/place/detail"）。"""
     key = os.getenv("AMAP_API_KEY")
     if not key:
         return {"error": "AMAP_API_KEY 未配置：请在 .env 中填写高德 Web 服务 Key"}
@@ -61,7 +64,7 @@ def amap_get(path: str, params: dict, retries: int = 3) -> dict:
         _throttle()
         try:
             resp = httpx.get(
-                f"{AMAP_BASE}{path}",
+                f"{AMAP_HOST}{path}" if path.startswith("/v5/") else f"{AMAP_BASE}{path}",
                 params={"key": key, **params},
                 timeout=TIMEOUT,
             )

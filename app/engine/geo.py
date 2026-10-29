@@ -28,6 +28,26 @@ def haversine_distance(lng1: float, lat1: float, lng2: float, lat2: float) -> fl
     return R * c
 
 
+def access_points(p: Any) -> list:
+    """地点实际进出的位置：有出入口数据时为各出入口，否则就是地点本身。"""
+    return getattr(p, "gates", None) or [p]
+
+
+def gate_pair(a: Any, b: Any) -> Tuple[Any, Any]:
+    """a → b 距离最近的一对进出位置：从 a 的哪个门出、进 b 的哪个门。都没有出入口时即 (a, b)。"""
+    ga, gb = access_points(a), access_points(b)
+    if len(ga) == 1 and len(gb) == 1:
+        return ga[0], gb[0]
+    return min(((x, y) for x in ga for y in gb),
+               key=lambda xy: haversine_distance(xy[0].lng, xy[0].lat, xy[1].lng, xy[1].lat))
+
+
+def place_distance(a: Any, b: Any) -> float:
+    """两地之间的直线距离（km），大型景区按最近的出入口算。排程里地点之间的距离都用它。"""
+    x, y = gate_pair(a, b)
+    return haversine_distance(x.lng, x.lat, y.lng, y.lat)
+
+
 SAME_AREA_KM = 4.0  # 簇重心相距 4km 以内视为同一片区，优先排在同一天
 WALKING_MAX_ROAD_KM = 2.0  # 道路距离 2km 以内按步行（约 25 分钟），超过才建议打车
 

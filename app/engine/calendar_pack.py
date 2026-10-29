@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import Dict, List, Tuple, Optional
 from .models import LocationPoint, Spot
 from .optimizer import optimize_spots_route
-from .geo import cluster_spots_spatially, estimate_transit, haversine_distance
+from .geo import cluster_spots_spatially, estimate_transit, haversine_distance, place_distance
 from .timeline import day_is_feasible
 from .hours import _WEEKDAY_CHARS, _D, _WD, _RANGE, day_span as _day_span, hours_on_date  # 星期正则与按日营业时间共用
 
@@ -91,7 +91,7 @@ def estimate_route_minutes(start: LocationPoint, spots: List[Spot]) -> int:
     total = 0
     cur = start
     for s in spots:
-        t_min, _ = estimate_transit(haversine_distance(cur.lng, cur.lat, s.lng, s.lat))
+        t_min, _ = estimate_transit(place_distance(cur, s))
         total += t_min + s.duration_minutes
         cur = s
     return total
@@ -121,7 +121,7 @@ _PERIOD_RANK = {"morning": 0, "evening": 2}
 
 
 def _leg(a, b) -> int:
-    return estimate_transit(haversine_distance(a.lng, a.lat, b.lng, b.lat))[0]
+    return estimate_transit(place_distance(a, b))[0]
 
 
 def _safe_leg(a, b) -> float:
@@ -210,7 +210,7 @@ def _exact_split(
     n, days = len(spots), len(date_list)
 
     def leg(a, b) -> int:
-        return estimate_transit(haversine_distance(a.lng, a.lat, b.lng, b.lat))[0]
+        return estimate_transit(place_distance(a, b))[0]
 
     def feasible(order: List[Spot], d: int) -> bool:
         # 只算白天：晚餐后的夜游不占白天预算（它们另受 EVENING_WINDOW_MIN 约束）。
