@@ -12,7 +12,7 @@
 
 **功能完整、可本地运行，尚未部署。** 后端 `agents/`、前端 `src/`、云函数 `cloud-functions/` 都已实现；
 `tests/` 有 195 个不联网的单元/回归测试，`eval/` 有 10 条真实提示词的测评脚本。
-开发在 `route-quality-fixes` 分支上进行（本地提交，未推送）。
+代码在 `master` 分支，远程仓库 https://github.com/wkxz/travel-router-agent 。
 
 `reference/` 里是**另一个已完成项目（travel-decision-agent）的只读副本**，
 用于抄写法，**不是本项目的代码**。不要修改 `reference/` 下的任何文件。

@@ -184,7 +184,7 @@ travel-decision-agent/
 - ✅ 后端：5 个工具 + 确定性排程引擎 + 独立校验器；高德真实路网通勤；忌口/预算；缺口清单（gaps / next_step）
 - ✅ 前端：聊天 + 行程卡片（无底图的路线示意图已按用户决定删除）
 - ✅ 测试：`tests/` 195 个不联网用例；`eval/` 10 条真实提示词测评（已跑 8 轮，结果不入库）
-- ✅ git：本地分支 `route-quality-fixes`，未推送；`master` 未合并
+- ✅ git：只有 `master` 一个分支，已推送到 https://github.com/wkxz/travel-router-agent
 - ⬜ 部署到 EdgeOne、飞书介绍文档、效果截图
 
 测评效果（第 1 轮 → 第 8 轮）：北京返程用例 150s/4 次排程 → 约 70s/1 次；忌口预算用例 255s/5 次 → 约 85s/1 次；
