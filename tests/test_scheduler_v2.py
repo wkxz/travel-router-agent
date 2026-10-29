@@ -5,13 +5,10 @@ import os
 import unittest
 from datetime import date
 
-# 直接测源码（agents/ 以别名 app 挂载）。旧版导入 .edgeone 构建产物，源码改了没重新构建时测的是旧代码。
-os.environ.setdefault("AI_GATEWAY_API_KEY", "dummy")  # chat 模块加载时会创建 OpenAI 客户端，不会真正请求
-import tests.fake_amap  # noqa: E402,F401
 from app.engine.models import LocationPoint, Spot, Restaurant  # noqa: E402
 from app.engine.scheduler import TripScheduler  # noqa: E402
 from app.engine.geo import cluster_spots_spatially  # noqa: E402
-from app.chat.index import _load_city_rules_text  # noqa: E402
+from app.agent import _load_city_rules_text  # noqa: E402
 
 
 class TestSchedulerV2(unittest.TestCase):
@@ -95,7 +92,7 @@ class TestSchedulerV2(unittest.TestCase):
 
     def test_prompt_has_no_city_specific_rules(self):
         """提示词面向任意城市：不得出现针对某个城市/景区/菜品的专属规则"""
-        from app.chat.index import AGENT_INSTRUCTIONS
+        from app.agent import AGENT_INSTRUCTIONS
         self.assertEqual(_load_city_rules_text(), "", "city_rules.json 默认不应注入任何规则")
         for word in ("西安", "城墙", "永宁门", "华山", "崂山", "西递", "宏村", "水席", "臭鳜鱼",
                      "羊肉泡馍", "熊猫", "成都", "南京", "北京", "火锅", "烤鸭"):

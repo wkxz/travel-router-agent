@@ -14,7 +14,7 @@ export interface Message {
   plan?: TripPlan;
 }
 
-/* ── 行程数据：结构与 agents/engine/renderer.py::render_dict 一致 ── */
+/* ── 行程数据：结构与 app/engine/renderer.py::render_dict 一致 ── */
 
 export interface PlanLocation {
   name: string;

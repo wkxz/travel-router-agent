@@ -1,9 +1,8 @@
-"""P0 回归测试：直接导入 agents/engine 源码（不经过 .edgeone 构建产物）。
+"""P0 回归测试：排程引擎 app/engine。
 
 运行：./.venv/Scripts/python.exe -m unittest tests.test_engine_p0 -v
 
-注意 `agents` 这个包名与 OpenAI Agents SDK 冲突，所以这里把 agents/engine
-以别名 `route_engine` 挂载；engine 内部全部是相对导入，不受影响。
+引擎以别名 `route_engine` 挂载（早期测试沿用的名字）；engine 内部全部是相对导入，不受影响。
 """
 
 import os
@@ -11,7 +10,7 @@ import sys
 import types
 import unittest
 
-_ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents", "engine")
+_ENGINE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app", "engine")
 if "route_engine" not in sys.modules:
     _pkg = types.ModuleType("route_engine")
     _pkg.__path__ = [_ENGINE_DIR]

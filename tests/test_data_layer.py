@@ -5,7 +5,7 @@
 
 import unittest
 
-from tests.fake_amap import FakeAmap, SPOTS, FOODS  # 同时完成 app 别名挂载
+from tests.fake_amap import FakeAmap, SPOTS, FOODS
 from app._data.poi_repo import PoiRepo, record_from_poi, geo_id
 from app._data.trip_input import build_trip_inputs, parse_refs
 

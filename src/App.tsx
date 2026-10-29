@@ -47,12 +47,9 @@ const LAMP_I18N_KEYS: Record<string, string> = {
 const CONVERSATION_ID_STORAGE_KEY = 'eo_conversation_id';
 
 /**
- * eo-uuid: stable per-browser identifier. Generated client-side on first
- * visit and persisted in localStorage. Used as the `userId` argument to all
- * memory-store calls so that listConversations / clear / delete can scope
- * results to "this browser's conversations only". Cross-template aware:
- * intentionally shares the same localStorage key with claude-agent-starter
- * so the same browser sees the same identity in either template.
+ * Stable per-browser identifier, generated on first visit and kept in localStorage.
+ * Sent as `userId` so the conversation list only shows this browser's conversations.
+ * (The storage key keeps its historical name so existing browsers keep their history.)
  */
 const EO_USER_ID_STORAGE_KEY = 'eo-uuid';
 const CONVERSATIONS_PAGE_SIZE = 20;

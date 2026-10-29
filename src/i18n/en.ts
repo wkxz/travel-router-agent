@@ -10,7 +10,7 @@ const en = {
 
   // Chat input
   "chat.placeholder": "Type a message... e.g. 3 days in Chengdu, want to visit Giant Panda Base and Wide & Narrow Alley, craving hotpot",
-  "chat.hint": "Powered by OpenAI Agents SDK + EdgeOne Makers + AMap API + Python Engine",
+  "chat.hint": "Powered by OpenAI Agents SDK + AMap API + Python Engine",
 
   // Preset questions
   "preset.1": "Plan a 3-day trip to Chengdu visiting Panda Base, Kuanzhai Alley and Jinli, with authentic hotpot and local snacks, staying near Chunxi Road.",
@@ -61,8 +61,6 @@ const en = {
   "lang.switch": "中文",
 
   // ─── Floating bottom-right action badges ─────────────────────────────
-  "floatingLink.deploy": "Deploy",
-  "floatingLink.github": "GitHub",
 } as const;
 
 export default en;

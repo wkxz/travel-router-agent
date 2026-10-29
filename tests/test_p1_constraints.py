@@ -13,9 +13,7 @@ import json
 import unittest
 from unittest import mock
 
-import os
-from tests.fake_amap import FakeAmap, FOODS  # noqa: F401  挂载 app 别名
-os.environ.setdefault("AI_GATEWAY_API_KEY", "dummy")  # chat 模块加载时会创建 OpenAI 客户端，不会真正请求
+from tests.fake_amap import FakeAmap
 import app._tools as tools
 import app._data.poi_repo as poi_repo
 from app._data.poi_repo import PoiRepo, PoiRecord, TripContext
@@ -147,14 +145,14 @@ if __name__ == "__main__":
 
 class TestConversationRepoCache(unittest.TestCase):
     def test_same_conversation_shares_repo(self):
-        import app.chat.index as chat
+        import app.agent as chat
         a1, a2, b = chat.context_for("conv-a"), chat.context_for("conv-a"), chat.context_for("conv-b")
         self.assertIs(a1.repo, a2.repo)
         self.assertIsNot(a1.repo, b.repo)
         self.assertIsNot(chat.context_for(None).repo, chat.context_for(None).repo)
 
     def test_cache_is_bounded(self):
-        import app.chat.index as chat
+        import app.agent as chat
         with mock.patch.object(chat, "_REPO_CACHE_MAX", 3), mock.patch.object(chat, "_repo_cache", chat.OrderedDict()):
             first = chat.context_for("c0").repo
             for i in range(1, 5):

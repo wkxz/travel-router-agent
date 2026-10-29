@@ -10,7 +10,6 @@
 import itertools
 import unittest
 
-from tests.fake_amap import FakeAmap  # noqa: F401  挂载 app 别名
 from app.engine import LocationPoint, Spot, Restaurant, TripScheduler
 from app.engine.geo import haversine_distance
 

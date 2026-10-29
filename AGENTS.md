@@ -3,12 +3,12 @@
 给在本仓库工作的 AI 编程助手的说明。开工前先读 `README.md`，再按需读 `docs/` 下的文档：
 
 - `docs/DEVELOPMENT.md`：环境、本地运行、测试与测评、开发约定、常见问题
-- `docs/DEPLOYMENT.md`：EdgeOne Makers 部署
+- `docs/DEPLOYMENT.md`：本机 / 服务器（systemd + Nginx）/ Docker 部署
 - `docs/ARCHITECTURE.md`：设计原则、排程引擎算法与参数依据（改引擎前先看）
 
 ## 现状
 
-功能完整、可本地运行，尚未部署。代码在 `master` 分支，远程仓库 https://github.com/wkxz/travel-router-agent 。
+功能完整，自托管：`python -m server` 一个进程提供接口与网页，会话存在本地 SQLite；也可用 Docker 部署。代码在 `master` 分支，远程仓库 https://github.com/wkxz/travel-router-agent 。
 
 ## 不可违背的规则
 
@@ -21,7 +21,7 @@
 
 1. 改代码前后都跑 `./.venv/Scripts/python.exe -m unittest discover -s tests -t .`；
    修 bug 先写能复现的测试，并确认撤掉修复后它会失败。
-2. 改了 `agents/` 后要重新执行 `local-build-agent.py` 并重启服务：本地服务跑的是 `.edgeone/` 里的构建副本。
+2. 改了 `app/` 或 `server/` 后重启 `python -m server`（直接运行源码，没有构建步骤）；改了前端用 `npx vite` 热更新，部署前 `npm run build`。
 3. 改了排程引擎或提示词，用 `eval/` 实测并与上一轮对比（会产生费用，先问用户）。
 4. 改了前端，跑 `npx tsc --noEmit -p .`，并在浏览器里实际验证（含手机宽度）。
 
@@ -36,7 +36,10 @@
 
 | 项 | 值 |
 |---|---|
-| 本地开发 | `edgeone makers dev` 在 Windows 上会卡死 → 手工构建 + uvicorn（`docs/DEVELOPMENT.md` 第 3 节） |
+| 本地开发 | 后端 `python -m server`（8000）+ 前端 `npx vite`（5173，代理到 8000） |
+| 包名 | 业务代码在 `app/`，不能叫 `agents`（会和 OpenAI Agents SDK 的 `agents` 包重名） |
+| 服务进程 | 只能单进程：停止生成的信号在进程内存里 |
+| 模型配置 | `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`；未设置时回退读 `AI_GATEWAY_*` |
 | 本机代理 | `curl` 本机服务必须加 `--noproxy '*'` |
 | 测试用的 Python | 必须用 `.venv`，系统 Python 没装 `openai-agents` |
 | 必吃数据源 | 高德 POI 传 `extensions=all` 才有 `biz_ext`（评分/人均/营业时间） |

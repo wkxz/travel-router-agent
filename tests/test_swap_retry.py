@@ -6,7 +6,6 @@
 
 import unittest
 
-from tests.fake_amap import FakeAmap  # noqa: F401  挂载 app 别名
 import app.engine.scheduler as scheduler_module
 from app.engine import LocationPoint, Spot, TripScheduler, TravelTimes
 from app.engine.travel import Leg

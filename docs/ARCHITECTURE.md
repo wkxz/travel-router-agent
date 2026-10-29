@@ -14,17 +14,50 @@
 ## 请求链路
 
 ```
-浏览器  POST /chat {message, userId}
-  → agents/chat/index.py      Agent 定义、提示词（每次请求注入北京时间当天日期）、SSE 流
+浏览器  POST /chat {message, userId}，请求头 X-Conversation-Id
+  → server/app.py             保存用户消息、登记取消信号，返回 SSE 流
+  → app/agent.py              chat_events()：Agent 定义、提示词（每次请求注入北京时间当天日期）
   → OpenAI Agents SDK         Runner.run_streamed，模型决定调用哪些工具（可并行）
-  → agents/_tools.py          5 个工具
-  → agents/_data/             高德客户端、POI 仓库（按会话缓存）、路网通勤、工具参数 → 引擎输入
-  → agents/engine/            分天 → 时间轴 → 校验 → 渲染
+  → app/_tools.py             5 个工具
+  → app/_data/                高德客户端、POI 仓库（按会话缓存）、路网通勤、工具参数 → 引擎输入
+  → app/engine/               分天 → 时间轴 → 校验 → 渲染
   ← SSE：text_delta（回复文字）/ tool_called（工具指示灯）/ plan（行程卡片）/ error / done
+  → server/app.py             流结束（含停止、断开）时把回复文字与行程保存为助手消息
 ```
 
-会话记忆由运行时的 `context.store.openai_session(conversation_id)` 提供；`POST /chat/stop` 通过
-`context.request.signal` 中断当前运行。会话列表、历史、删除由 `cloud-functions/` 下的云函数提供。
+`app/` 与 Web 框架无关：`chat_events(message, conversation_id, session, cancel_event)` 只产出 SSE 文本帧，
+会话记忆和取消信号由调用方传入。`server/` 负责 HTTP、存储和取消；`eval/` 直接在进程内调用 `chat_events`。
+
+## HTTP 接口 `server/app.py`
+
+Starlette + uvicorn，单进程。除 `/health` 和前端外均为 `POST` + JSON。
+
+| 路由 | 请求体 | 返回 |
+|---|---|---|
+| `/chat` | `{message, userId?, userMsgId?, botMsgId?}`，请求头 `X-Conversation-Id`（缺省时新建） | `text/event-stream`；带 `X-Accel-Buffering: no` 关闭代理缓冲 |
+| `/chat/stop` | `{conversation_id}` | `{status, conversationId, aborted}`：置位该会话的取消信号 |
+| `/conversations` | `{user_id, limit?, order?, after?}` | `{conversations, nextCursor}`，按最近消息排序，`after` 为偏移量游标 |
+| `/history` | `{conversation_id}` | `{messages}`，助手消息带 `plan`，刷新后能恢复行程卡片 |
+| `/clear-history` | `{conversation_id}` | 清空聊天记录与模型记忆，保留会话 |
+| `/delete-conversation` | `{conversation_id}` | 删除会话、聊天记录与模型记忆 |
+| `GET /health` | — | `{status: ok \| misconfigured, missing: [变量名]}` |
+| 其余 `GET` | — | `dist/` 下的前端文件；找不到时回退 `index.html`（单页应用）；路径限制在 `dist/` 内 |
+
+停止生成：`/chat` 为每个进行中的会话登记一个 `asyncio.Event`，`/chat/stop` 置位后 `chat_events` 取消当前运行，
+已生成的部分照常保存。因为信号在进程内存里，**服务只能单进程运行**。
+
+## 存储 `server/store.py`
+
+一个 SQLite 文件（WAL 模式），标准库 `sqlite3` 实现：
+
+| 表 | 维护方 | 内容 |
+|---|---|---|
+| `conversations` | `Store` | id、user_id、标题（第一条用户消息前 8 字）、预览（去 Markdown 符号）、创建与最近消息时间 |
+| `messages` | `Store` | 每轮一条用户消息、一条助手消息；助手消息的 `plan` 列存行程 JSON |
+| `agent_sessions` / `agent_messages` | OpenAI Agents SDK `SQLiteSession` | 模型多轮记忆（含上一轮工具结果），按会话 id 隔离 |
+
+界面看到的聊天记录与模型的记忆分开存：前者只有文字与行程卡片，后者是 SDK 需要的完整消息条目。
+删除、清空会话时两边一起删。用户用浏览器 `localStorage` 里的随机 id 区分，没有登录鉴权。
 
 ## 工具
 
@@ -44,7 +77,7 @@
 - 排程结果有缺口（必吃没排上、饭点只能「周边自选」）时，`gaps` 给出缺口位置，`next_step` 告诉模型在哪里补检索、只重排一次；
   没有缺口时明确告诉模型不要重排、不要自行删减景点。
 
-## 数据层 `agents/_data/`
+## 数据层 `app/_data/`
 
 | 模块 | 职责 |
 |---|---|
@@ -53,7 +86,7 @@
 | `routing.py` | `AmapTravel`：按终点批量请求 `/v3/distance`（起点每批不超过 100 个，超出部分高德会静默丢弃），步行/驾车路网时长；取不到时回退直线估算并标注「估算」；识别隔水绕行 |
 | `trip_input.py` | 工具参数（id 列表、点名、忌口、预算）→ 引擎的 `Spot` / `Restaurant`；匹配必吃菜名；过滤忌口与超预算餐厅 |
 
-## 排程引擎 `agents/engine/`
+## 排程引擎 `app/engine/`
 
 纯 Python、不访问网络，可脱离 Agent 单独测试。
 
@@ -117,7 +150,7 @@
 
 ## 前端 `src/`
 
-React 18 + Vite。主要组件：
+React 18 + Vite，接口调用集中在 `src/api.ts`。生产环境由后端托管 `dist/`，开发时 Vite 把接口代理到后端。主要组件：
 
 | 组件 | 作用 |
 |---|---|
@@ -125,7 +158,7 @@ React 18 + Vite。主要组件：
 | `ChatWindow` / `ChatBubble` | 消息列表，Markdown 渲染（不启用原始 HTML） |
 | `TripPlanCard` | 行程卡片：按天切换的时间线，展示通勤、营业时间、价格、提示，以及每餐满足的必吃 |
 | `ToolIndicators` | 五个工具的实时指示灯 |
-| `ConversationSidebar` | 会话列表（数据来自云函数） |
+| `ConversationSidebar` | 会话列表（数据来自 `/conversations`） |
 | `DebugPanel` / `CodeViewer` | 调试面板 |
 
 界面支持中英切换（`src/i18n/`），≤640px 宽度时切换为手机布局。行程卡片内容由引擎生成，固定为中文。

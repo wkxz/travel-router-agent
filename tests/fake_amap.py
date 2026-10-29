@@ -1,18 +1,4 @@
-"""离线测试用的高德替身：字段格式取自 2026-10-22 的实测响应（含 opentime2 原文），不发网络请求。
-
-同时把 agents/ 以别名 `app` 挂载：项目目录名 agents 与 OpenAI Agents SDK 同名，
-直接 import 会冲突；别名挂载后包内相对导入照常工作，SDK 的 `from agents import ...` 也不受影响。
-"""
-
-import os
-import sys
-import types
-
-_AGENTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents")
-if "app" not in sys.modules:
-    _pkg = types.ModuleType("app")
-    _pkg.__path__ = [_AGENTS_DIR]
-    sys.modules["app"] = _pkg
+"""离线测试用的高德替身：字段格式取自 2026-10-22 的实测响应（含 opentime2 原文），不发网络请求。"""
 
 MONDAY = "2026-10-26"
 

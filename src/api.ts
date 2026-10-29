@@ -1,15 +1,11 @@
 /**
- * Backend API (EdgeOne Makers)
- *
- * Route mapping (file → route):
- *   agents/chat/index.ts                         → POST /chat                  Main chat endpoint (SSE)
- *   agents/chat/stop.py                          → POST /chat/stop             Abort the active agent run
- *   cloud-functions/history/index.ts             → POST /history               Get conversation history
- *   cloud-functions/conversations/index.ts       → POST /conversations         List conversations for a user
- *   cloud-functions/clear-history/index.ts       → POST /clear-history         Clear messages of one conversation
- *   cloud-functions/delete-conversation/index.ts → POST /delete-conversation   Permanently delete a conversation
- *
- * This file defines all API paths and request wrappers.
+ * 后端接口（server/app.py）：
+ *   POST /chat                  对话（SSE），请求头 X-Conversation-Id
+ *   POST /chat/stop             中断正在生成的回复
+ *   POST /history               某个会话的聊天记录
+ *   POST /conversations         当前用户的会话列表
+ *   POST /clear-history         清空某个会话的消息
+ *   POST /delete-conversation   删除会话
  */
 
 import type {
@@ -21,7 +17,7 @@ import type {
 
 export const API = {
   chat: '/chat',
-  chatStop: '/chat/stop',                   // Abort the active agent run（agents/chat/stop.py；/stop 是运行时自带路由，本地 vite 代理不转发）
+  chatStop: '/chat/stop',                   // Abort the active agent run
   history: '/history',                      // Get conversation history
   clearHistory: '/clear-history',           // Clear messages in a conversation
   conversations: '/conversations',          // List conversations for a user
@@ -101,7 +97,7 @@ export function sendMessageStream(
         'Content-Type': 'application/json',
       };
       if (conversationId) {
-        headers['makers-conversation-id'] = conversationId;
+        headers['X-Conversation-Id'] = conversationId;
       }
 
       const res = await fetch(API.chat, {
@@ -222,36 +218,12 @@ function dispatchSseChunk(part: string, cb: StreamCallbacks, markDone: () => voi
   }
 }
 
-/**
- * Request the backend to abort the currently running agent
- *
- * Note: the stop request header must NOT carry the same conversation_id as chat,
- * otherwise the runtime will overwrite chat's cancel_event with stop's cancel_event,
- * causing abort_active_run to fail. The target conversation_id is passed only via body.
- */
+/** Request the backend to abort the currently running agent run of this conversation. */
 export async function stopAgent(conversationId?: string): Promise<boolean> {
   try {
-    /**
-     * EdgeOne agents/ runtime requires Markers-Conversation-Id on every
-     * agents/* request (since 2026-06-05 platform upgrade) — without it
-     * the runtime returns 400 (`AGENT_CONVERSATION_ID_REQUIRED`) before
-     * the handler runs.
-     *
-     * Earlier comments in this codebase warned that adding the header on
-     * /stop would overwrite chat's abort signal slot. The new runtime is
-     * expected to no longer have that bug; if you observe stop succeeding
-     * but chat not actually aborting, revisit this and use a different
-     * cancellation channel.
-     */
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    if (conversationId) {
-      headers['makers-conversation-id'] = conversationId;
-    }
     const res = await fetch(API.chatStop, {
       method: 'POST',
-      headers,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversation_id: conversationId }),
     });
     return res.ok;
@@ -280,7 +252,7 @@ export async function clearConversationHistory(
 }
 
 /**
- * List conversations for the given user (eo-uuid).
+ * List conversations for the given user (per-browser id).
  * Returns at most `limit` (default 20) conversations ordered by lastMessageAt desc by default.
  */
 export async function listConversations(

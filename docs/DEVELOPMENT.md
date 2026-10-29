@@ -4,9 +4,8 @@
 
 | 依赖 | 版本（开发时使用） | 说明 |
 |---|---|---|
-| Python | 3.11 | Agent 与排程引擎 |
-| Node.js | 22 / 24 | 前端构建与 EdgeOne CLI |
-| EdgeOne CLI | npm 包 `edgeone` | 本地构建需要它自带的 agent-python 运行时模板 |
+| Python | 3.11 | Agent、排程引擎与 HTTP 服务 |
+| Node.js | 22 / 24 | 前端开发与构建 |
 
 ```bash
 # Python 依赖
@@ -19,55 +18,51 @@ npm install
 
 ## 2. 配置密钥
 
-复制 `.env.example` 为 `.env` 并填写（变量说明见 [DEPLOYMENT.md](DEPLOYMENT.md#22-密钥)）：
+复制 `.env.example` 为 `.env` 并填写（变量说明见 [DEPLOYMENT.md](DEPLOYMENT.md#1-准备密钥)）：
 
 ```
-AI_GATEWAY_API_KEY=
-AI_GATEWAY_BASE_URL=
-AI_GATEWAY_MODEL=
+LLM_API_KEY=
+LLM_BASE_URL=
+LLM_MODEL=
 AMAP_API_KEY=
 ```
 
 `.env` 已在 `.gitignore` 中。**密钥只从环境变量读取**：不要硬编码、不要打印、不要提交。
-返回给模型或写进日志的错误文本都会先经过 `agents/_data/amap.py` 的 `redact_secrets` 脱敏。
+返回给模型或写进日志的错误文本都会先经过 `app/_data/amap.py` 的 `redact_secrets` 脱敏。
 
 ## 3. 本地运行
 
-官方方式是 `edgeone makers dev`（`npm run dev:agents`），但它在 **Windows 上会卡死**（CLI 1.6.41 的已知问题）。
-项目提供手工构建 + uvicorn 的方式，各平台通用：
+开发时开两个终端：
 
 ```bash
-# 1. 构建：把 agents/ 复制为 .edgeone/agent-python/pages_agents/ 并改写导入路径，拷入运行时模板
-./.venv/Scripts/python.exe local-build-agent.py
+# 终端 1：后端（http://127.0.0.1:8000）
+./.venv/Scripts/python.exe -m server
 
-# 2. 启动 Agent（http://127.0.0.1:8088）
-bash local-dev.sh                 # PowerShell：./local-dev.ps1
-
-# 3. 启动前端（http://localhost:5173，/chat、/chat/stop、/health 代理到 8088）
-npx vite --config vite.config.local.ts
+# 终端 2：前端热更新（http://localhost:5173，接口请求代理到 8000）
+npx vite
 ```
 
-要点：
-
-- **改了 `agents/` 下的代码，必须重新执行第 1 步。** 本地服务运行的是 `.edgeone/` 里的构建副本，不是源码。
-- 构建脚本按以下顺序查找运行时模板：环境变量 `EDGEONE_AGENT_TEMPLATE` → 项目内 `node_modules/edgeone/edgeone-dist/pages/templates/agent-python`。
-  都找不到、但 `.edgeone/agent-python/_platform` 已存在时，沿用已有运行时，只重建业务代码。
-- 本地前端只代理 Agent 路由，**会话列表、历史等云函数接口本地不可用**（返回 404），部署后正常；
-  刷新页面时会话从浏览器本地快照恢复。
+- 打开 http://localhost:5173 开发前端；接口路径列表在 `vite.config.ts` 的 `proxy` 里，新增接口要同步加上。
+  后端不在 8000 时，用环境变量 `BACKEND_URL` 指定。
+- 改了 `app/` 或 `server/` 的 Python 代码后重启后端即可（直接运行源码，没有构建步骤）。
+- 只想验证生产形态：`npm run build` 后直接打开 http://127.0.0.1:8000 ，由后端托管 `dist/`。
+- 本地数据库默认在 `data/travel-agent.db`，删掉即清空所有会话。
 - 本机配置了 HTTP 代理时，`curl` 访问本地服务要加 `--noproxy '*'`，否则会被代理拦截返回 502。
 
-快速验证 Agent：
+快速验证：
 
 ```bash
-curl --noproxy '*' -N -X POST http://127.0.0.1:8088/chat \
-  -H 'Content-Type: application/json' \
+curl --noproxy '*' http://127.0.0.1:8000/health
+
+curl --noproxy '*' -N -X POST http://127.0.0.1:8000/chat \
+  -H 'Content-Type: application/json' -H 'X-Conversation-Id: test-1' \
   -d '{"message":"杭州玩 2 天，想去西湖和灵隐寺，想吃片儿川"}'
 ```
 
 ## 4. 测试
 
 ```bash
-# 单元 / 回归测试：不联网、不花钱，约 3 秒
+# 单元 / 回归 / 接口测试：不联网、不花钱，几秒内完成
 ./.venv/Scripts/python.exe -m unittest discover -s tests -t .
 
 # 前端类型检查与生产构建
@@ -75,8 +70,8 @@ npx tsc --noEmit -p .
 npm run build
 ```
 
-- `tests/` 共 195 个用例，用假数据（`tests/fake_amap.py`）覆盖排程、校验、工具层与安全脱敏。
-  测试直接导入源码 `agents/`，不需要先构建。
+- 测试用假数据（`tests/fake_amap.py`）覆盖排程、校验、工具层与安全脱敏；
+  `tests/test_server.py` 用 Starlette `TestClient` 和假的模型事件流测试全部 HTTP 接口与 SQLite 存储，数据库放在临时目录。
 - **修 bug 先写能复现问题的测试**，并确认撤掉修复后该测试会失败，避免写出「怎么都能过」的空测试。
 - `tests/test_eval_regressions.py` 里有一条「分天计算 2 秒内完成」的耗时断言，机器繁忙时偶尔会超时，重跑即可。
 
@@ -100,19 +95,21 @@ npm run build
 
 1. **行程表由确定性 Python 生成，不由 LLM 直接写。** LLM 只负责理解需求、检索、准备参数与最终解读；
    模型只能引用工具返回的 POI id，接触不到坐标、评分、营业时间（原因见 [ARCHITECTURE.md](ARCHITECTURE.md#设计原则)）。
-2. 排程引擎 `agents/engine/` 保持纯 Python、不访问网络；真实路网通过 `TravelTimes` 子类注入。
-3. 工具失败时返回具体原因（`{"error": ...}`），不要当成空结果，否则模型会编造。
-4. 不针对某个城市写专属规则；地方经验交给模型知识，引擎只做通用约束。
-5. 提示词 `AGENT_INSTRUCTIONS` 是 f-string，里面的花括号要写成 `{{ }}`。
+2. `app/` 与 Web 框架无关：`app/agent.py` 的 `chat_events()` 产出 SSE 文本帧，`server/` 只负责 HTTP、存储与取消信号。
+3. 排程引擎 `app/engine/` 保持纯 Python、不访问网络；真实路网通过 `TravelTimes` 子类注入。
+4. 工具失败时返回具体原因（`{"error": ...}`），不要当成空结果，否则模型会编造。
+5. 不针对某个城市写专属规则；地方经验交给模型知识，引擎只做通用约束。
+6. 提示词 `AGENT_INSTRUCTIONS` 是 f-string，里面的花括号要写成 `{{ }}`。
+7. 业务包名是 `app`，**不要改回 `agents`**：会和 OpenAI Agents SDK 的 `agents` 包重名，`from agents import Agent` 会失败。
 
 ## 7. 常见问题
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| `edgeone makers dev` 卡住无输出 | CLI 在 Windows 上的缺陷 | 用第 3 节的手工构建 + uvicorn |
-| `404 No handler for /chat` | `AGENT_ROUTE_TABLE` 的键写成了正则 | 键必须是精确路径 `/chat` |
-| `ImportError: pages_agents` | 构建时把 `from agents import Agent` 也改写了 | 只改写 `from agents.<模块>` 形式的导入（`local-build-agent.py` 已处理） |
-| 本地行为和源码不一致 | 运行的是 `.edgeone/` 构建副本 | 重新执行 `local-build-agent.py` 并重启服务 |
-| `curl` 本地服务 502 | 本机 HTTP 代理拦截 | 加 `--noproxy '*'` |
 | 测试报 `cannot import name 'Agent' from 'agents'` | 用了系统 Python，没装 `openai-agents` | 用 `.venv` 里的 Python 运行 |
+| 5173 页面发消息报 502 / 连接失败 | 后端没启动，或不在 8000 端口 | 先启动 `python -m server`；端口不同时设 `BACKEND_URL` |
+| 8000 页面显示「前端尚未构建」 | 没有 `dist/` | `npm run build`，或开发时改用 5173 |
+| `/health` 显示缺少配置 | `.env` 不在项目根目录或没填全 | 从项目根目录启动，补齐变量 |
+| `curl` 本地服务 502 | 本机 HTTP 代理拦截 | 加 `--noproxy '*'` |
 | 控制台中文乱码 | Windows 控制台编码 | 设置 `PYTHONIOENCODING=utf-8` |
+| Windows 日志里偶尔有 `ConnectionResetError` | 浏览器断开连接时 asyncio 在 Windows 上的提示 | 无害，可忽略 |

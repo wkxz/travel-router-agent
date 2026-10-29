@@ -4,11 +4,8 @@
 *.env
 !.env.example
 
-# EdgeOne
-.edgeone/
-.edgeone.zip
-.edgeone-token
-.tef_dist/
+# 本地数据（会话数据库）
+data/
 
 # 依赖
 node_modules/
@@ -20,10 +17,6 @@ __pycache__/
 # 构建产物
 dist/
 build/
-
-# 本地开发产物（手工复现构建生成的）
-_pages_agents/
-public/maps/*.png
 
 # OS
 .DS_Store
@@ -41,3 +34,4 @@ uv.toml
 
 # 真实环境测评输出（含模型回复与店铺数据）
 eval/results/
+public/maps/

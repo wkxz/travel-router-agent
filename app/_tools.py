@@ -46,8 +46,7 @@ def tool_error(ctx: RunContextWrapper, error: Exception) -> str:
 def extract_plan(output: Any) -> Optional[dict]:
     """从 generate_trip_itinerary 的输出里取出行程数据；不是行程或生成失败时返回 None。
 
-    chat 流式接口据此推送 plan 事件。cloud-functions/history 里有一份同逻辑的副本
-    （云函数单独部署，无法 import 本模块），改动时两边同步。
+    chat 流式接口据此推送 plan 事件，服务端据此把行程随助手消息一起保存。
     """
     if isinstance(output, str):
         try:

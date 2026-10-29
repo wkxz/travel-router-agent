@@ -9,7 +9,7 @@ import json
 import unittest
 from unittest import mock
 
-from tests.fake_amap import FakeAmap, MONDAY  # 同时完成 app 别名挂载
+from tests.fake_amap import FakeAmap, MONDAY
 from agents.tool_context import ToolContext  # OpenAI Agents SDK
 import app._tools as tools
 import app._data.poi_repo as poi_repo

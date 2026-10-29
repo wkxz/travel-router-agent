@@ -1,6 +1,6 @@
 """真实环境测评：在进程内运行与线上相同的 Agent，记录每轮的工具调用（参数 + 返回）、行程与最终回复。
 
-需要 .env 里配置真实的 AI_GATEWAY_* 与 AMAP_API_KEY；会产生模型与高德调用费用。
+需要 .env 里配置真实的 LLM_* 与 AMAP_API_KEY；会产生模型与高德调用费用。
 用例串行执行（共用一个高德节流器，避免 10021 限流）。
 
 用法（仓库根目录）：
@@ -14,10 +14,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 from dotenv import load_dotenv; load_dotenv(".env")
-import tests.fake_amap  # noqa: F401  把 agents/ 挂载为 app（与 SDK 的 agents 包同名），直接用源码而非构建产物
 from agents import Runner, SQLiteSession
 from openai.types.responses import ResponseTextDeltaEvent
-import app.chat.index as chat
+import app.agent as chat
 from app._data.poi_repo import TripContext
 from app._tools import extract_plan
 

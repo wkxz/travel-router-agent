@@ -1,8 +1,6 @@
-"""Agent handler — EdgeOne Makers
-========================================
+"""旅游路线生成 + 必吃推荐 Agent：Agent 定义、提示词与 SSE 事件流。
 
-The file path agents/chat/index.py is auto-mapped to **POST /chat**.
-旅游路线生成 + 必吃推荐 Agent。
+与 Web 框架无关：server/app.py 把 chat_events() 产出的 SSE 帧原样写给浏览器。
 
 核心原则：
 1. 意图解析：从自然语言中提取目的地城市、游玩天数、必去地点/偏好、必吃食物/菜系、出发/住宿位置。
@@ -22,11 +20,11 @@ from collections import OrderedDict
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent
-from agents import Agent, MaxTurnsExceeded, OpenAIChatCompletionsModel, Runner
+from agents import Agent, MaxTurnsExceeded, OpenAIChatCompletionsModel, Runner, set_tracing_disabled
 
-from .._logger import create_logger
-from .._data.poi_repo import PoiRepo, TripContext
-from .._tools import (
+from ._logger import create_logger
+from ._data.poi_repo import PoiRepo, TripContext
+from ._tools import (
     extract_plan,
     geocode_location,
     get_city_weather,
@@ -39,14 +37,23 @@ load_dotenv()
 
 logger = create_logger("chat")
 
+# SDK 默认把运行轨迹上报到 OpenAI 平台；私有部署不需要，也不应把对话外发
+set_tracing_disabled(True)
+
 # ========== LLM Model ==========
+def llm_env(name: str) -> str:
+    """读取 LLM_<name>；兼容旧变量名 AI_GATEWAY_<name>。"""
+    return os.getenv(f"LLM_{name}") or os.getenv(f"AI_GATEWAY_{name}") or ""
+
+
+# 任意 OpenAI 兼容端点均可（需支持 function calling 与流式输出）
 llm_client = AsyncOpenAI(
-    api_key=os.getenv("AI_GATEWAY_API_KEY"),
-    base_url=os.getenv("AI_GATEWAY_BASE_URL"),
+    api_key=llm_env("API_KEY") or "missing",  # 未配置时也要能加载模块（测试、健康检查）；真正请求时会报鉴权错误
+    base_url=llm_env("BASE_URL") or None,
 )
 
 llm_model = OpenAIChatCompletionsModel(
-    model=os.getenv("AI_GATEWAY_MODEL", "@makers/deepseek-v4-flash"),
+    model=llm_env("MODEL"),
     openai_client=llm_client,
 )
 
@@ -54,25 +61,13 @@ llm_model = OpenAIChatCompletionsModel(
 # 地理编码再排程，模型逐个串行调用工具时 10 轮不够用，会中途抛 MaxTurnsExceeded。
 MAX_TURNS = int(os.getenv("AGENT_MAX_TURNS", "30"))
 
-CHINA_TZ = timezone(timedelta(hours=8))  # 部署节点系统时区可能是 UTC；固定 UTC+8，不依赖 tzdata
+CHINA_TZ = timezone(timedelta(hours=8))  # 服务器系统时区可能是 UTC；固定 UTC+8，不依赖 tzdata
 _WEEKDAYS = "一二三四五六日"
 
 # ========== 动态城市规则与 Prompt 解耦 ==========
 def _load_city_rules_text() -> str:
-    possible_paths = [
-        os.path.join(os.path.dirname(__file__), "..", "city_rules.json"),
-        os.path.join(os.path.dirname(__file__), "city_rules.json"),
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "agents", "city_rules.json"),
-        os.path.join(os.getcwd(), "agents", "city_rules.json"),
-        os.path.join(os.getcwd(), ".edgeone", "agent-python", "pages_agents", "city_rules.json"),
-    ]
-    rules_path = None
-    for p in possible_paths:
-        if os.path.exists(p):
-            rules_path = p
-            break
-
-    if not rules_path:
+    rules_path = os.path.join(os.path.dirname(__file__), "city_rules.json")
+    if not os.path.exists(rules_path):
         return ""
     try:
         with open(rules_path, "r", encoding="utf-8") as f:
@@ -272,49 +267,26 @@ async def _event_stream(
                               "status": None, "detail": None})
 
 
-# ========== Core Handler ==========
-async def handler(context: Any) -> AsyncGenerator[str, None]:
-    request = context.request
-    body = request.body
-    message = body.get("message") if isinstance(body, dict) else None
+# ========== 对外入口 ==========
+async def chat_events(
+    message: str,
+    conversation_id: str | None = None,
+    session=None,
+    cancel_event: asyncio.Event | None = None,
+) -> AsyncGenerator[str, None]:
+    """一轮对话的完整 SSE 帧序列，最后一帧总是 done。
 
+    session：Agents SDK 的会话记忆（如 SQLiteSession），None 表示无记忆的单轮对话。
+    cancel_event：被 set 时尽快停止（POST /chat/stop）。
+    """
     if not message:
         yield sse_event("error", {"message": "'message' is required"})
         yield sse_event("done", {})
         return
 
-    raw_user_id = ""
-    if isinstance(body, dict):
-        raw_user_id = body.get("userId") or body.get("user_id") or ""
-    user_id = str(raw_user_id).strip() or None
-
-    cid = context.conversation_id
-    logger.log(f"[request] cid={cid}, uid={user_id or '-'}, message={message[:50]!r}")
-
-    if user_id and cid:
-        try:
-            existing = await context.store.get_messages(
-                conversation_id=cid, limit=1
-            )
-            already_indexed = bool(existing)
-        except Exception as e:
-            logger.error(f"[user-index] probe failed: {type(e).__name__}: {e}")
-            already_indexed = False
-
-        if not already_indexed:
-            try:
-                msg_id = await context.store.append_message(
-                    conversation_id=cid,
-                    role="user",
-                    content=message,
-                    user_id=user_id,
-                )
-                logger.log(f"[user-index] WROTE first-turn: cid={cid} msg_id={msg_id!r}")
-            except Exception as e:
-                logger.error(f"[user-index] FAILED: {type(e).__name__}: {e}")
-
-    session = context.store.openai_session(cid) if cid else None
-    cancel_signal = request.signal
+    cid = conversation_id
+    logger.log(f"[request] cid={cid}, message={message[:50]!r}")
+    cancel_signal = cancel_event
     stopped = False
 
     try:

@@ -10,16 +10,14 @@
 
 import asyncio
 import json
-import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest import mock
 
-from tests.fake_amap import FakeAmap  # 同时完成 app 别名挂载
+from tests.fake_amap import FakeAmap
 
-os.environ.setdefault("AI_GATEWAY_API_KEY", "dummy")  # 模块加载时会创建 OpenAI 客户端，不会真正请求
-import app.chat.index as chat  # noqa: E402
+import app.agent as chat  # noqa: E402
 import app._tools as tools  # noqa: E402
 import app._data.poi_repo as poi_repo  # noqa: E402
 from app._data.routing import AmapTravel, MAX_ORIGINS, MAX_REQUESTS  # noqa: E402
@@ -56,10 +54,8 @@ class TestMaxTurns(unittest.TestCase):
         self.assertGreaterEqual(chat.MAX_TURNS, 30)
 
     def test_max_turns_exceeded_is_explained(self):
-        ctx = SimpleNamespace(request=SimpleNamespace(body={"message": "去南京"}, signal=None),
-                              conversation_id=None, store=None)
         with mock.patch.object(chat.Runner, "run_streamed", return_value=_RaisingStream()):
-            frames = asyncio.run(_collect(chat.handler(ctx)))
+            frames = asyncio.run(_collect(chat.chat_events("去南京")))
         err = next(f for f in frames if f.startswith("event: error"))
         self.assertIn("轮上限", err)
         self.assertTrue(frames[-1].startswith("event: done"))

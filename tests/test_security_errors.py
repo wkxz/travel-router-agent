@@ -14,7 +14,6 @@ from unittest import mock
 
 import httpx
 
-from tests.fake_amap import FakeAmap  # noqa: F401  挂载 app 别名
 import app._tools as tools
 import app._data.amap as amap
 from agents.tool_context import ToolContext

@@ -16,8 +16,6 @@ if sys.stdout.encoding.lower() != 'utf-8':
 
 import unittest
 
-# 直接测源码（agents/ 以别名 app 挂载），不依赖 .edgeone 构建产物
-import tests.fake_amap  # noqa: F401
 from app.engine import (
     LocationPoint,
     Spot,

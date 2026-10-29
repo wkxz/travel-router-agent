@@ -10,7 +10,7 @@ const zh = {
 
   // Chat input
   "chat.placeholder": "发消息… 例如：去成都玩 3 天，想去大熊猫基地和宽窄巷子，必须吃地道火锅",
-  "chat.hint": "由 OpenAI Agents SDK + EdgeOne Makers + 高德地图 Web API + Python 排程引擎驱动",
+  "chat.hint": "由 OpenAI Agents SDK + 高德地图 Web API + Python 排程引擎驱动",
 
   // Preset questions
   "preset.1": "去成都玩 3 天，想去宽窄巷子、大熊猫基地、锦里，想吃地道老火锅和特色小吃，住春熙路附近。",
@@ -61,8 +61,6 @@ const zh = {
   "lang.switch": "English",
 
   // ─── Floating bottom-right action badges ─────────────────────────────
-  "floatingLink.deploy": "一键部署",
-  "floatingLink.github": "GitHub",
 } as const;
 
 export default zh;

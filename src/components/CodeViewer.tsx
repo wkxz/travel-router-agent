@@ -38,7 +38,7 @@ export default function CodeViewer() {
       <div className={styles.header}>
         <div className={styles.headerLeft}>
           <span className={styles.fileIcon}>⬡</span>
-          <span className={styles.filename}>handler.py</span>
+          <span className={styles.filename}>app/agent.py</span>
         </div>
         <span className={styles.badge}>READ ONLY</span>
       </div>
@@ -75,101 +75,49 @@ export default function CodeViewer() {
           </L>
           <L n={11} />
 
-          {/* ── 2. Handler ── */}
-          <L n={12}>
-            <Kw t="async def " /><Fn t="handler" /><Op t="(" /><Va t="context" /><Op t="):" />
-          </L>
+          {/* ── 2. Agent ── */}
+          <L n={12}><Cmt t="# 2. Agent: the model only understands, searches and explains" /></L>
           <L n={13}>
-            <I1><Va t="message" /><Op t=" = " /><Va t="context" /><Op t="." /><Va t="request" /><Op t="." /><Va t="body" /><Op t="." /><Fn t="get" /><Op t="(" /><Str t='"message"' /><Op t=", " /><Str t='""' /><Op t=")" /></I1>
+            <Va t="agent" /><Op t=" = " /><Ty t="Agent" /><Op t="(" /><Va t="name" /><Op t="=" /><Str t='"旅游路线与必吃推荐助手"' /><Op t=", " />
+            <Va t="instructions" /><Op t="=" /><Fn t="build_instructions" /><Op t="," />
           </L>
           <L n={14}>
-            <I1><Va t="conversation_id" /><Op t=" = " /><Va t="context" /><Op t="." /><Va t="conversation_id" /></I1>
+            <I1><Va t="model" /><Op t="=" /><Va t="llm_model" /><Op t=", " /><Va t="tools" /><Op t="=" /><Va t="TOOLS" /><Op t=")" /></I1>
           </L>
-          <L n={15}>
-            <I1><Va t="store" /><Op t=" = " /><Va t="context" /><Op t="." /><Va t="store" /></I1>
-          </L>
-          <L n={16} />
+          <L n={15} />
 
-          {/* ── 3. Store: save user message ── */}
+          {/* ── 3. One turn as an SSE stream ── */}
+          <L n={16}><Cmt t="# 3. One turn → SSE frames (app/agent.py)" /></L>
           <L n={17}>
-            <I1><Cmt t="# 2. Store: save user message for history" /></I1>
+            <Kw t="async def " /><Fn t="chat_events" /><Op t="(" /><Va t="message" /><Op t=", " /><Va t="conversation_id" /><Op t=", " /><Va t="session" /><Op t=", " /><Va t="cancel_event" /><Op t="):" />
           </L>
           <L n={18}>
-            <I1><Kw t="await " /><Va t="store" /><Op t="." /><Fn t="append_message" /><Op t="(" /><Va t="conversation_id" /><Op t=", " /><Str t='"user"' /><Op t=", " /><Va t="message" /><Op t=")" /></I1>
+            <I1><Va t="result" /><Op t=" = " /><Ty t="Runner" /><Op t="." /><Fn t="run_streamed" /><Op t="(" /><Va t="agent" /><Op t=", " /><Va t="input" /><Op t="=" /><Va t="message" /><Op t=", " /><Va t="session" /><Op t="=" /><Va t="session" /><Op t=")" /></I1>
           </L>
-          <L n={19} />
-
-          {/* ── 4. Store: inject session memory ── */}
+          <L n={19}>
+            <I1><Kw t="async for " /><Va t="event" /><Kw t=" in " /><Va t="result" /><Op t="." /><Fn t="stream_events" /><Op t="():" /></I1>
+          </L>
           <L n={20}>
-            <I1><Cmt t="# 3. Store: inject OpenAI Agents SDK session memory" /></I1>
+            <I2><Kw t="if " /><Va t="cancel_event" /><Op t="." /><Fn t="is_set" /><Op t="(): " /><Kw t="break" /></I2>
           </L>
           <L n={21}>
-            <I1><Va t="session" /><Op t=" = " /><Va t="store" /><Op t="." /><Fn t="openai_session" /><Op t="(" /><Va t="conversation_id" /><Op t=")" /></I1>
+            <I2><Kw t="yield " /><Fn t="sse_event" /><Op t="(...)" /><Cmt t="  # text_delta / tool_called / plan" /></I2>
           </L>
-          <L n={22} />
+          <L n={22}>
+            <I1><Kw t="yield " /><Fn t="sse_event" /><Op t="(" /><Str t='"done"' /><Op t=", {})" /></I1>
+          </L>
+          <L n={23} />
 
-          {/* ── 5. Create Agent ── */}
-          <L n={23}>
-            <I1><Cmt t="# 4. Create OpenAI Agent" /></I1>
-          </L>
-          <L n={24}>
-            <I1><Va t="agent" /><Op t=" = " /><Ty t="Agent" /><Op t="(" /></I1>
-          </L>
+          {/* ── 4. HTTP server ── */}
+          <L n={24}><Cmt t="# 4. Server: POST /chat (server/app.py)" /></L>
           <L n={25}>
-            <I2><Va t="name" /><Op t="=" /><Str t='"旅游路线与必吃推荐助手"' /><Op t="," /></I2>
+            <Kw t="async def " /><Fn t="chat" /><Op t="(" /><Va t="request" /><Op t="):" />
           </L>
           <L n={26}>
-            <I2><Va t="instructions" /><Op t="=" /><Va t="INSTRUCTIONS" /><Op t="," /></I2>
+            <I1><Va t="session" /><Op t=" = " /><Va t="store" /><Op t="." /><Fn t="agent_session" /><Op t="(" /><Va t="cid" /><Op t=")" /><Cmt t="  # SQLite conversation memory" /></I1>
           </L>
           <L n={27}>
-            <I2><Va t="model" /><Op t="=" /><Va t="llm_model" /><Op t="," /></I2>
-          </L>
-          <L n={28}>
-            <I2><Va t="tools" /><Op t="=" /><Va t="TOOLS" /><Op t="," /></I2>
-          </L>
-          <L n={29}>
-            <I1><Op t=")" /></I1>
-          </L>
-          <L n={30} />
-
-          {/* ── 6. Run Agent with session ── */}
-          <L n={31}>
-            <I1><Cmt t="# 5. Run Agent with Store session" /></I1>
-          </L>
-          <L n={32}>
-            <I1><Va t="result" /><Op t=" = " /><Ty t="Runner" /><Op t="." /><Fn t="run_streamed" /><Op t="(" /></I1>
-          </L>
-          <L n={33}>
-            <I2><Va t="agent" /><Op t="," /></I2>
-          </L>
-          <L n={34}>
-            <I2><Va t="input" /><Op t="=" /><Va t="message" /><Op t="," /></I2>
-          </L>
-          <L n={35}>
-            <I2><Va t="session" /><Op t="=" /><Va t="session" /><Op t="," /></I2>
-          </L>
-          <L n={36}>
-            <I1><Op t=")" /></I1>
-          </L>
-          <L n={37} />
-
-          {/* ── 7. Collect result & save ── */}
-          <L n={38}>
-            <I1><Cmt t="# SSE streaming omitted..." /></I1>
-          </L>
-          <L n={39}>
-            <I1><Va t="assistant_text" /><Op t=" = " /><Kw t="await " /><Fn t="collect_text" /><Op t="(" /><Va t="result" /><Op t=")" /></I1>
-          </L>
-          <L n={40} />
-          <L n={41}>
-            <I1><Cmt t="# 6. Store: save assistant reply for /history" /></I1>
-          </L>
-          <L n={42}>
-            <I1><Kw t="await " /><Va t="store" /><Op t="." /><Fn t="append_message" /><Op t="(" /><Va t="conversation_id" /><Op t=", " /><Str t='"assistant"' /><Op t=", " /><Va t="assistant_text" /><Op t=")" /></I1>
-          </L>
-          <L n={43} />
-          <L n={44}>
-            <I1><Kw t="return " /><Op t="{" /><Str t='"answer"' /><Op t=": " /><Va t="assistant_text" /><Op t="}" /></I1>
+            <I1><Kw t="return " /><Ty t="StreamingResponse" /><Op t="(" /><Fn t="chat_events" /><Op t="(" /><Va t="message" /><Op t=", " /><Va t="cid" /><Op t=", " /><Va t="session" /><Op t=", " /><Va t="cancel" /><Op t="), " /><Va t="media_type" /><Op t="=" /><Str t='"text/event-stream"' /><Op t=")" /></I1>
           </L>
         </div>
       </div>
@@ -177,7 +125,7 @@ export default function CodeViewer() {
       {/* ── Footer tag ── */}
       <div className={styles.footer}>
         <span className={styles.footerDot} />
-        <span>OpenAI Agents SDK · EdgeOne Makers</span>
+        <span>OpenAI Agents SDK · Starlette</span>
       </div>
     </div>
   );

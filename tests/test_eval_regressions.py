@@ -11,7 +11,6 @@
 import unittest
 from datetime import date
 
-from tests.fake_amap import FakeAmap  # noqa: F401  挂载 app 别名
 from app.engine import LocationPoint, Spot, Restaurant, TripScheduler
 from app.engine.calendar_pack import is_spot_closed_on_date, parse_closed_days
 

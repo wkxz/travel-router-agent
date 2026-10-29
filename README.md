@@ -17,47 +17,56 @@
 - **细节到位**：按出行当天取营业时段（含星期、节假日、季节段），隔水绕行提示，宜早去 / 夜游时段，
   返程日告别餐提前，用户点名的景点优先保留。
 - **多轮修改**：「把雷峰塔换成西溪湿地，其他不变」这类追问只改对应部分。
+- **自托管**：一个 Python 进程同时提供接口与网页，会话保存在本地 SQLite；本机、云服务器、Docker 均可部署。
 - 桌面与手机浏览器均可使用，界面支持中英切换。
 
 ## 技术栈
 
 | 层 | 技术 |
 |---|---|
-| 平台 | 腾讯云 EdgeOne Makers（前端托管 + Python Agent + 云函数） |
-| Agent | OpenAI Agents SDK（Python），OpenAI 兼容模型网关 |
+| Agent | OpenAI Agents SDK（Python），任意 OpenAI 兼容模型（需支持 function calling） |
+| 服务 | Starlette + uvicorn，SSE 流式输出；SQLite 保存会话与模型记忆 |
 | 数据 | 高德 Web 服务 API |
 | 排程引擎 | 纯 Python（状态压缩 DP 分天、时间轴模拟、独立校验） |
 | 前端 | React 18 + Vite + TypeScript |
 
 ## 快速开始
 
+需要 Python 3.11+、Node.js 20+，以及一个高德「Web 服务」Key 和一个 OpenAI 兼容的大模型 Key。
+
 ```bash
 # 1. 安装依赖
 python -m venv .venv
-./.venv/Scripts/python.exe -m pip install -r requirements.txt
+./.venv/Scripts/python.exe -m pip install -r requirements.txt   # macOS / Linux：.venv/bin/python
 npm install
 
-# 2. 配置密钥：复制 .env.example 为 .env，填写 AI_GATEWAY_* 与 AMAP_API_KEY
+# 2. 配置密钥：复制 .env.example 为 .env，填写 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL / AMAP_API_KEY
 
-# 3. 构建并启动 Agent（8088）
-./.venv/Scripts/python.exe local-build-agent.py
-bash local-dev.sh                  # PowerShell：./local-dev.ps1
-
-# 4. 启动前端（http://localhost:5173）
-npx vite --config vite.config.local.ts
+# 3. 构建前端并启动服务
+npm run build
+./.venv/Scripts/python.exe -m server
 ```
 
-详细步骤与常见问题见 [开发指南](docs/DEVELOPMENT.md)。
+打开 http://127.0.0.1:8000 即可使用。开发时前端热更新的方式见 [开发指南](docs/DEVELOPMENT.md)。
+
+### Docker
+
+```bash
+cp .env.example .env      # 填写密钥
+docker compose up -d --build
+```
+
+服务监听 8000 端口，数据库保存在 `./data/`。
 
 ## 部署
 
-推送到 GitHub 后在 EdgeOne Makers 导入仓库，配置 4 个环境变量即可，之后每次推送自动部署。
-完整步骤、环境变量说明与部署后验证见 [部署指南](docs/DEPLOYMENT.md)。
+本机、Linux 服务器（systemd + Nginx + HTTPS）、Docker 三种方式，以及环境变量、数据备份、升级与常见问题，
+见 [部署指南](docs/DEPLOYMENT.md)。
 
 ## 测试
 
 ```bash
-./.venv/Scripts/python.exe -m unittest discover -s tests -t .   # 195 个用例，不联网
+./.venv/Scripts/python.exe -m unittest discover -s tests -t .   # 不联网、不花钱
 npm run build                                                   # 类型检查 + 生产构建
 ```
 
@@ -66,16 +75,20 @@ npm run build                                                   # 类型检查 +
 ## 项目结构
 
 ```
-agents/
-  chat/                Agent 定义、提示词、SSE 流（/chat、/chat/stop）
+app/                   Agent 与业务逻辑（与 Web 框架无关）
+  agent.py             Agent 定义、提示词、SSE 事件流
   _tools.py            5 个工具：地理编码、天气、景点检索、餐饮检索、行程生成
   _data/               高德客户端（节流、重试、脱敏）、POI 缓存、路网通勤、参数转换
   engine/              排程引擎：分天、时间轴、营业时间、校验、渲染
-cloud-functions/       会话列表、历史、删除
+server/                HTTP 服务
+  app.py               路由：/chat、/chat/stop、会话管理、/health、前端静态文件
+  store.py             SQLite：会话列表、聊天记录、模型会话记忆
 src/                   React 前端
-tests/                 单元与回归测试
+tests/                 单元、回归与接口测试
 eval/                  真实环境测评脚本
 docs/                  开发、部署、架构文档
+Dockerfile             两阶段构建：前端 + Python 服务
+docker-compose.yml
 ```
 
 ## 文档
@@ -83,13 +96,13 @@ docs/                  开发、部署、架构文档
 | 文档 | 内容 |
 |---|---|
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 环境搭建、本地运行、测试与测评、开发约定、常见问题 |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | EdgeOne Makers 部署、环境变量、访问与验证、更新与回退 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 设计原则、请求链路、工具、排程引擎算法与参数依据、数据源 |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 本机 / 服务器 / Docker 部署、环境变量、HTTPS、备份、升级 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 设计原则、请求链路、接口、存储、工具、排程引擎算法与参数依据、数据源 |
 | [docs/API-RESEARCH.md](docs/API-RESEARCH.md) | 数据源调研与实测结果 |
 
 ## 已知限制
 
-- 本地开发时会话列表、历史等云函数接口不可用（部署后正常）。
-- 云函数按前端传来的 `user_id` 区分用户，没有登录鉴权。
+- 没有登录鉴权：每个浏览器生成一个随机用户 id 区分会话列表。对公网开放时建议在反向代理上加访问控制（见部署指南）。
+- 服务按单进程设计（停止生成的信号保存在进程内存里），不要用多 worker 启动。
 - 景点超过 10 个时分天退回启发式算法，不保证最优。
 - 行程卡片内容固定为中文。
