@@ -25,6 +25,9 @@ class FakeStream:
         for e in self._events:
             yield e
 
+    def cancel(self):
+        pass
+
 
 def _tool_event(event_name, **item):
     return SimpleNamespace(type="run_item_stream_event", name=event_name, item=SimpleNamespace(**item))

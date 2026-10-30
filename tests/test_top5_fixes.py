@@ -44,10 +44,13 @@ class _RaisingStream:
         raise MaxTurnsExceeded("Max turns (30) exceeded")
         yield  # pragma: no cover
 
+    def cancel(self):
+        pass
+
 
 class TestMaxTurns(unittest.TestCase):
     def test_runner_gets_raised_max_turns(self):
-        fake = SimpleNamespace(stream_events=lambda: _empty())
+        fake = SimpleNamespace(stream_events=lambda: _empty(), cancel=lambda: None)
         with mock.patch.object(chat.Runner, "run_streamed", return_value=fake) as run:
             asyncio.run(_collect(chat._event_stream("去南京")))
         self.assertEqual(run.call_args.kwargs["max_turns"], chat.MAX_TURNS)

@@ -12,6 +12,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncGenerator
 import asyncio
+import contextlib
 import json
 import os
 import threading
@@ -251,32 +252,37 @@ async def _event_stream(
         result = Runner.run_streamed(agent, input=message, session=session, context=context, max_turns=MAX_TURNS)
         text_chars, produced = 0, False
 
-        async for event in result.stream_events():
-            if cancel_signal and cancel_signal.is_set():
-                return
+        # 中途返回（用户停止、外层关闭生成器）时必须 cancel：只是不再读事件流的话，SDK 的后台任务会继续调模型和工具
+        # （实测停止后 3 秒内又调了 6 次工具，见 tests/test_stop_run.py）
+        try:
+            async for event in result.stream_events():
+                if cancel_signal and cancel_signal.is_set():
+                    return
 
-            if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
-                text_chars += len(event.data.delta)
-                produced = True
-                yield sse_event("text_delta", {"delta": event.data.delta})
+                if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                    text_chars += len(event.data.delta)
+                    produced = True
+                    yield sse_event("text_delta", {"delta": event.data.delta})
 
-            elif event.type == "run_item_stream_event":
-                if event.name == "tool_called":
-                    tool_name = (
-                        getattr(event.item, "name", None)
-                        or getattr(getattr(event.item, "raw_item", None), "name", None)
-                    )
-                    if tool_name:
-                        logger.log(f"[stream] tool_called: {tool_name}")
-                        yield sse_event("tool_called", {"tool": tool_name})
+                elif event.type == "run_item_stream_event":
+                    if event.name == "tool_called":
+                        tool_name = (
+                            getattr(event.item, "name", None)
+                            or getattr(getattr(event.item, "raw_item", None), "name", None)
+                        )
+                        if tool_name:
+                            logger.log(f"[stream] tool_called: {tool_name}")
+                            yield sse_event("tool_called", {"tool": tool_name})
 
-                elif event.name == "tool_output":
-                    # 行程数据绕过模型直接推给前端渲染，模型无从改写
-                    plan = extract_plan(getattr(event.item, "output", None), context)
-                    if plan:
-                        produced = True
-                        logger.log(f"[stream] plan: {plan.get('city')} {plan.get('total_days')}d")
-                        yield sse_event("plan", plan)
+                    elif event.name == "tool_output":
+                        # 行程数据绕过模型直接推给前端渲染，模型无从改写
+                        plan = extract_plan(getattr(event.item, "output", None), context)
+                        if plan:
+                            produced = True
+                            logger.log(f"[stream] plan: {plan.get('city')} {plan.get('total_days')}d")
+                            yield sse_event("plan", plan)
+        finally:
+            result.cancel()
 
         logger.log(f"[stream] run finished: attempt={attempt + 1} text_chars={text_chars} produced={produced}")
         if produced:
@@ -311,11 +317,14 @@ async def chat_events(
     stopped = False
 
     try:
-        async for frame in _event_stream(message, session, cancel_signal, conversation_id=cid):
-            if cancel_signal and cancel_signal.is_set():
-                stopped = True
-                break
-            yield frame
+        # aclosing：break 后立即关闭内层生成器，触发它的 finally（取消后台 run），不等垃圾回收
+        async with contextlib.aclosing(_event_stream(message, session, cancel_signal, conversation_id=cid)) as frames:
+            async for frame in frames:
+                if cancel_signal and cancel_signal.is_set():
+                    break
+                yield frame
+        # 内层发现停止信号时会先返回，外层的循环是正常结束的，这里统一判断
+        stopped = bool(cancel_signal and cancel_signal.is_set())
     except asyncio.CancelledError:
         stopped = True
         logger.log("[stream] cancelled")

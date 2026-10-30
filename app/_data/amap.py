@@ -2,6 +2,7 @@
 
 - Key 只从环境变量 AMAP_API_KEY 读取，绝不硬编码、绝不打印；
 - 全局节流 + QPS 限流（10019~10022）退避重试；
+- 额度用完（10044 等）时熔断，熔断期内不再发请求；
 - 失败统一返回 {"error": "..."}，让模型能如实解释原因。
 """
 
@@ -23,6 +24,15 @@ _last_call_at = 0.0
 # QPS 超限类错误码：都按限流退避重试，且与「查不到」区分开。
 # 2026-10-23 测评实测出现 10022（info=CGQPS_HAS_EXCEEDED_THE_LIMIT），旧代码只认 10021，直接当失败返回给了模型。
 QPS_CODES = {"10019", "10020", "10021", "10022"}
+
+
+# 额度用完：2026-10-30 月免费额度用完后实测 10044（info=USER_DAILY_QUERY_OVER_LIMIT，名称是 DAILY、实际按月）。
+# 10003（DAILY_QUERY_OVER_LIMIT）、10045（USER_ABROAD_DAILY_QUERY_OVER_LIMIT）按官方错误码表一并处理，未实测。
+# 熔断 QUOTA_COOLDOWN 秒后放一个请求探测，充值或到了下个月能自动恢复，不用重启服务。
+QUOTA_CODES = {"10003", "10044", "10045"}
+QUOTA_COOLDOWN = 600
+_quota_blocked_until = 0.0
+_quota_error = ""
 
 
 def is_qps_error(data: dict) -> bool:
@@ -59,6 +69,10 @@ def amap_get(path: str, params: dict, retries: int = 3) -> dict:
     if not key:
         return {"error": "AMAP_API_KEY 未配置：请在 .env 中填写高德 Web 服务 Key"}
 
+    global _quota_blocked_until, _quota_error
+    if time.monotonic() < _quota_blocked_until:
+        return {"error": _quota_error}
+
     last_error = ""
     for attempt in range(retries):
         _throttle()
@@ -86,6 +100,11 @@ def amap_get(path: str, params: dict, retries: int = 3) -> dict:
             return data
 
         info = f"{data.get('info')}（infocode={data.get('infocode')}）"
+        if str(data.get("infocode")) in QUOTA_CODES:
+            _quota_error = (f"高德接口调用额度已用完：{info}。这不代表查不到，之后的检索都会失败，不要换关键词重试；"
+                            "如实告诉用户地图服务额度已用完、请稍后再试。")
+            _quota_blocked_until = time.monotonic() + QUOTA_COOLDOWN
+            return {"error": _quota_error}
         if is_qps_error(data):
             last_error = f"高德接口限流（请求过于频繁，不代表查不到），已重试 {attempt + 1} 次：{info}"
             if attempt < retries - 1:

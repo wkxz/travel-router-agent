@@ -43,6 +43,9 @@ class FakeStream:
         for e in self._events:
             yield e
 
+    def cancel(self):
+        pass
+
 
 def tearDownModule():
     server.store._conn.close()
@@ -134,6 +137,9 @@ class TestServer(unittest.TestCase):
             async def stream_events(self):
                 raise RuntimeError("upstream rejected key sk-test-123456")
                 yield
+
+            def cancel(self):
+                pass
         with mock.patch.dict(os.environ, {"LLM_API_KEY": "sk-test-123456"}),                 mock.patch.object(chat.Runner, "run_streamed", return_value=Boom()):
             res = self.client.post("/chat", json={"message": "hi"}, headers={"X-Conversation-Id": "c-redact"})
         self.assertIn("error", res.text)
