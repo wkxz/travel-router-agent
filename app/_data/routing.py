@@ -15,7 +15,7 @@ import math
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from .amap import amap_get
-from ..engine.geo import access_points, gate_pair, haversine_distance, WALKING_MAX_ROAD_KM
+from ..engine.geo import all_points, gate_pair, haversine_distance
 from ..engine.models import LocationPoint
 from ..engine.travel import Leg, TravelTimes, gate_note, is_roundabout
 
@@ -35,7 +35,7 @@ class AmapTravel(TravelTimes):
 
     def __init__(self, points: Iterable[LocationPoint], fetch: Optional[Fetch] = None):
         self._fetch = fetch
-        self._points: List[str] = list(dict.fromkeys(g.location_str for p in points for g in access_points(p)))
+        self._points: List[str] = list(dict.fromkeys(g.location_str for p in points for g in all_points(p)))
         self._matrix: Dict[Tuple[str, str, str], Optional[Tuple[float, float]]] = {}
         self._legs: Dict[Tuple[str, str, str], Leg] = {}
         self.requests = 0
@@ -98,9 +98,9 @@ class AmapTravel(TravelTimes):
             return self.estimate(a, b, mode)  # 同一坐标（如景区内的餐厅），不必请求
         straight_km = haversine_distance(x.lng, x.lat, y.lng, y.lat)
 
-        if mode == "walking" or (mode == "auto" and straight_km <= WALKING_MAX_ROAD_KM):
+        if mode == "walking" or (mode == "auto" and straight_km <= self.walk_max_km):
             walk = self._lookup(WALK, o, d)
-            if walk and (mode == "walking" or walk[0] / 1000 <= WALKING_MAX_ROAD_KM):
+            if walk and (mode == "walking" or walk[0] / 1000 <= self.walk_max_km):
                 km = walk[0] / 1000
                 minutes = max(MIN_WALK_MIN, math.ceil(walk[1] / 60))
                 return Leg(minutes, f"步行约 {minutes} 分钟 ({km:.1f} km){note}", round(km, 2), False)

@@ -29,7 +29,7 @@ def is_qps_error(data: dict) -> bool:
     return str(data.get("infocode")) in QPS_CODES or "QPS_HAS_EXCEEDED" in str(data.get("info"))
 
 
-SECRET_ENV_VARS = ("AMAP_API_KEY", "LLM_API_KEY", "AI_GATEWAY_API_KEY")
+SECRET_ENV_VARS = ("AMAP_API_KEY", "LLM_API_KEY", "AI_GATEWAY_API_KEY", "REVIEW_API_KEY")  # REVIEW_：eval/review.py 的点评模型
 
 
 def redact_secrets(text: str) -> str:

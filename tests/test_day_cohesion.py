@@ -124,19 +124,21 @@ class TestNightSpotNotInDailyCap(unittest.TestCase):
         self.assertEqual(plan.days[0].total_spots, 4)
 
     def test_daytime_still_capped(self):
-        spots = [Spot(name=f"白天{i}", lng=118.790 + 0.003 * i, lat=32.040, duration_minutes=60) for i in range(4)]
+        # 每个点 90 分钟、各算 1 个名额：短景点空档补点按时长折算，见 test_cap_by_duration
+        spots = [Spot(name=f"白天{i}", lng=118.790 + 0.003 * i, lat=32.040, duration_minutes=90) for i in range(4)]
         hotel = LocationPoint(name="住处", lng=118.795, lat=32.038)
         plan = TripScheduler("南京", 1, hotel, start_date="2026-11-25").schedule(spots, [])
         self.assertEqual(plan.days[0].total_spots, 3, _spot_rows(plan))
 
     def test_backup_does_not_exceed_daytime_cap(self):
-        spots = [Spot(name="白天A", lng=118.790, lat=32.040, duration_minutes=60),
-                 Spot(name="白天B", lng=118.793, lat=32.040, duration_minutes=60),
-                 Spot(name="白天C", lng=118.796, lat=32.040, duration_minutes=60),
-                 Spot(name="夜游D", lng=118.797, lat=32.042, duration_minutes=60, best_period="evening")]
+        # 每个点 90 分钟、各算 1 个名额：短景点空档补点按时长折算，见 test_cap_by_duration
+        spots = [Spot(name="白天A", lng=118.790, lat=32.040, duration_minutes=90),
+                 Spot(name="白天B", lng=118.793, lat=32.040, duration_minutes=90),
+                 Spot(name="白天C", lng=118.796, lat=32.040, duration_minutes=90),
+                 Spot(name="夜游D", lng=118.797, lat=32.042, duration_minutes=90, best_period="evening")]
         hotel = LocationPoint(name="住处", lng=118.795, lat=32.038)
         plan = TripScheduler("南京", 1, hotel, start_date="2026-11-25").schedule(
-            spots, [], backup_spots=[Spot(name="备选E", lng=118.794, lat=32.041, duration_minutes=60)])
+            spots, [], backup_spots=[Spot(name="备选E", lng=118.794, lat=32.041, duration_minutes=90)])
         self.assertNotIn("备选E", _day_of(plan), _spot_rows(plan))
 
 
@@ -182,3 +184,30 @@ class TestSnackOnTheWay(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTwelveSpotsExact(unittest.TestCase):
+    """紧凑档 3 天、模型按「天数 × 上限」补满就是 12 个点。旧版超过 10 个走启发式：
+    装箱时按离重心远近挪点、不看 must，下面这组随机生成的点里丢了点名的「景点5」，而穷举能全部排下。"""
+
+    POINTS = [("景点0", 118.7374, 32.0488, 120), ("景点1", 118.8363, 32.0874, 90), ("景点2", 118.8016, 32.0088, 60),
+              ("景点3", 118.772, 32.0599, 60), ("景点4", 118.7437, 32.0572, 90), ("景点5", 118.7349, 32.0002, 120),
+              ("景点6", 118.8171, 32.0826, 60), ("景点7", 118.7782, 32.0118, 60), ("景点8", 118.749, 32.0746, 60),
+              ("景点9", 118.7847, 32.0572, 180), ("景点10", 118.7699, 32.0248, 180), ("景点11", 118.8288, 32.0694, 60)]
+
+    def test_all_twelve_placed(self):
+        spots = [Spot(name=n, lng=x, lat=y, duration_minutes=m, must_visit=i < 6)
+                 for i, (n, x, y, m) in enumerate(self.POINTS)]
+        plan = TripScheduler("某市", 3, LocationPoint(name="住处", lng=118.78, lat=32.05),
+                             start_date="2026-11-24", pace="compact").schedule(spots, [])
+        self.assertEqual(plan.unassigned_spots, [])
+
+    def test_heuristic_keeps_named_spots(self):
+        # 超过 12 个点走启发式：一天放不下时，先挪走没点名的。旧版只按离重心远近挪，外圈 4 个点名的全被挤掉
+        center = [Spot(name=f"推荐{i}", lng=118.780 + 0.002 * i, lat=32.050, duration_minutes=60) for i in range(9)]
+        named = [Spot(name=f"点名{i}", lng=118.780 + dx, lat=32.050 + dy, duration_minutes=60, must_visit=True)
+                 for i, (dx, dy) in enumerate(((0.02, 0.0), (-0.02, 0.0), (0.0, 0.02), (0.0, -0.02)))]
+        plan = TripScheduler("某市", 1, LocationPoint(name="住处", lng=118.78, lat=32.05),
+                             start_date="2026-11-24", pace="compact").schedule(center + named, [])
+        placed = [it.title for it in plan.days[0].items if it.category == "spot"]
+        self.assertEqual(sum("点名" in t for t in placed), 4, placed)

@@ -33,14 +33,16 @@ CASES = [
     ("10_too_many", ["上海2天，想去外滩、豫园、南京路步行街、迪士尼、田子坊、武康路、陆家嘴，住人民广场"]),
     # 2026-10-29 用户实测：鸡鸣寺/玄武湖、夫子庙/老门东被拆到不同天，午饭 13:49，下午空档 2.5 小时
     ("11_nanjing_3days", ["11月25号想去南京玩3天，想要去鸡鸣寺、玄武湖、南京博物院、先锋书店，老门东，音乐台，吃咸水鸭，牛肉锅贴，其他看着来"]),
+    # 出行人群：第 1 轮应传 mobility=limited；第 2 轮模型即使没再传，行程备注里也应仍有「行动不便」的调整
+    ("12_elderly_multiturn", ["带爸妈去南京玩2天，我妈腿脚不太好走不了太多路，想去中山陵和夫子庙，住新街口", "第二天加上玄武湖"]),
 ]
 
 
 async def run_turn(message, session, cid):
     rec = {"message": message, "tools": [], "plans": [], "text": "", "error": None}
     t0 = time.time()
-    result = Runner.run_streamed(chat.agent, input=message, session=session, context=chat.context_for(cid),  # 与线上一致：同一会话共享 POI 缓存
-                                 max_turns=chat.MAX_TURNS)
+    ctx = chat.context_for(cid)  # 与线上一致：同一会话共享 POI 缓存
+    result = Runner.run_streamed(chat.agent, input=message, session=session, context=ctx, max_turns=chat.MAX_TURNS)
     pending = {}
     try:
         async for ev in result.stream_events():
@@ -58,7 +60,7 @@ async def run_turn(message, session, cid):
                 out = getattr(ev.item, "output", None)
                 if cid in pending:
                     pending[cid]["output"] = out if isinstance(out, str) else json.dumps(out, ensure_ascii=False)
-                plan = extract_plan(out)
+                plan = extract_plan(out, ctx)
                 if plan:
                     rec["plans"].append(plan)
     except Exception as e:

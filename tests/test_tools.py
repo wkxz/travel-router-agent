@@ -17,9 +17,15 @@ from app._data.poi_repo import TripContext, PoiRepo
 
 
 def call(tool, context: TripContext, **kwargs) -> dict:
+    """调用工具并解析输出。排程工具给模型的只有精简版（itinerary）和编号 plan_no，
+    这里按编号从上下文取出推给前端的完整行程放进 res["plan"]，方便断言；精简版本身见
+    test_model_sees_compact_view_frontend_gets_full_plan。"""
     args = json.dumps(kwargs, ensure_ascii=False)
     tc = ToolContext(context=context, tool_name=tool.name, tool_call_id="t1", tool_arguments=args)
-    return json.loads(asyncio.run(tool.on_invoke_tool(tc, args)))
+    res = json.loads(asyncio.run(tool.on_invoke_tool(tc, args)))
+    if isinstance(res, dict) and "plan_no" in res:
+        res["plan"] = tools.extract_plan(res, context)
+    return res
 
 
 class ToolTestCase(unittest.TestCase):
@@ -116,6 +122,24 @@ class TestItineraryTool(ToolTestCase):
         res = call(tools.generate_trip_itinerary, self.ctx, city="南京", total_days=1, spots="[{坏", foods="[]")
         self.assertIn("JSON", res["error"])
 
+    def test_model_sees_compact_view_frontend_gets_full_plan(self):
+        """给模型的只有时间、标题、提醒与未安排等结论；完整行程（坐标、营业时间、交通…）存在本轮上下文里推给前端。
+        第 4 轮测评：排程工具每次返回平均 7.8KB、最大 11KB，12 例共 17 次，回复里却明确要求「不要复述行程表」。"""
+        out = asyncio.run(tools.generate_trip_itinerary.on_invoke_tool(
+            ToolContext(context=self.ctx, tool_name="generate_trip_itinerary", tool_call_id="t1", tool_arguments="{}"),
+            json.dumps(dict(city="南京", total_days=1, spots='["B0LAKE", "B0FAKE"]', foods="[]",
+                            start_date="2026-10-27"), ensure_ascii=False)))
+        res = json.loads(out)
+        for key in ('"lng"', '"lat"', '"poi_id"', '"open_time"', '"transit_info"'):
+            self.assertNotIn(key, out)
+        day = res["itinerary"]["days"][0]
+        self.assertTrue(any("游览【" in x for x in day["items"]), day)
+        self.assertTrue(any(u.startswith("B0FAKE") for u in res["itinerary"]["unassigned_spots"]))
+        plan = tools.extract_plan(out, self.ctx)
+        self.assertEqual(plan["city"], "南京")
+        self.assertIn("lng", plan["days"][0]["items"][1]["location"])
+        self.assertIsNone(tools.extract_plan(out))  # 没有上下文取不到
+
     def test_output_is_plan_not_markdown(self):
         res = call(tools.generate_trip_itinerary, self.ctx, city="南京", total_days=1,
                    spots='["B0LAKE"]', foods="[]", start_date="2026-10-27")
@@ -153,6 +177,60 @@ class TestBranchesAndTips(ToolTestCase):
         self.assertLessEqual(len(book["tips"]), 121)
         lake = next(i for i in spots if "玄武湖" in i["title"])
         self.assertEqual(lake["tips"], "")
+
+    def test_branch_does_not_inherit_tips(self):
+        # 2026-10-30 测评：模型给五台山总店写的「地下车库改造」被原样挂到了换成的老门东店上
+        spots = self._run({"id": "B0BOOKS", "any_branch": True, "tips": "由地下车库改造"})
+        book = next(i for i in spots if "玄武湖分店" in i["title"])
+        self.assertEqual(book["tips"], "")
+
+
+class TestReplanLimit(ToolTestCase):
+    """2026-10-30 测评：模型为放下一个点名景点连删带换重排了 6 次、耗时 3 分钟。提示词约束不住，由代码限制。"""
+
+    def _gen(self, ctx, **kw):
+        args = dict(city="南京", total_days=1, spots='["B0LAKE"]', foods="[]", start_date="2026-10-27")
+        args.update(kw)
+        return call(tools.generate_trip_itinerary, ctx, **args)
+
+    def test_third_plan_in_one_reply_refused(self):
+        self.assertTrue(self._gen(self.ctx)["success"])
+        self.assertTrue(self._gen(self.ctx)["success"])
+        third = self._gen(self.ctx)
+        self.assertFalse(third["success"])
+        self.assertIn("不再重排", third["error"])
+        self.assertIsNone(tools.extract_plan(json.dumps(third, ensure_ascii=False)))  # 前端保留上一份行程
+
+    def test_failed_calls_do_not_count(self):
+        for _ in range(3):
+            self.assertFalse(self._gen(self.ctx, total_days=0)["success"])  # 漏传天数这类参数错误
+        self.assertTrue(self._gen(self.ctx)["success"])
+
+    def test_new_reply_starts_fresh(self):
+        self._gen(self.ctx), self._gen(self.ctx)
+        self.assertTrue(self._gen(TripContext(repo=self.ctx.repo))["success"])  # 下一轮对话是新的 TripContext
+
+
+class TestMobility(ToolTestCase):
+    """同行有老人 / 行动不便：步行上限收紧、节奏不超过均衡；同一会话后续轮次模型漏传时沿用。"""
+
+    def _plan(self, ctx, **kw):
+        args = dict(city="南京", total_days=1, spots='["B0LAKE", "B0MUSEUM"]', foods="[]",
+                    start_date="2026-10-27", pace="compact")
+        args.update(kw)
+        res = call(tools.generate_trip_itinerary, ctx, **args)
+        self.assertTrue(res["success"], res)
+        return res["plan"]
+
+    def test_limited_mobility_applied_and_remembered(self):
+        call(tools.search_scenic_spots, self.ctx, city="南京", keywords="南京博物院")
+        plan = self._plan(self.ctx, mobility="limited")
+        self.assertTrue(any("行动不便" in n for n in plan["notes"]), plan["notes"])
+        nxt = TripContext(repo=self.ctx.repo)  # 同一会话的下一轮，模型没再传 mobility
+        plan = self._plan(nxt)
+        self.assertTrue(any("行动不便" in n for n in plan["notes"]), plan["notes"])
+        plan = self._plan(TripContext(repo=self.ctx.repo), mobility="normal")  # 用户说不用照顾了
+        self.assertFalse(any("行动不便" in n for n in plan["notes"]), plan["notes"])
 
 
 class TestExtractPlan(unittest.TestCase):

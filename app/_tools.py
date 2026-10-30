@@ -26,6 +26,10 @@ from .engine.renderer import PLAN_KIND
 logger = create_logger("tools")
 
 DISPLAY_NOTE = "行程表已由系统直接展示给用户，回复中不要复述或改写行程表。"
+# 一轮回复最多生成几份行程：首次 + 按 gaps 补检索后重排一次。2026-10-30 测评模型为放下一个景点重排了 6 次、
+# 耗时 3 分钟，提示词约束不住，由代码兜底；参数错误等失败的调用不计
+MAX_PLANS_PER_REPLY = 2
+MOBILITY_VALUES = ("normal", "limited")
 
 
 def tool_error(ctx: RunContextWrapper, error: Exception) -> str:
@@ -44,9 +48,11 @@ def tool_error(ctx: RunContextWrapper, error: Exception) -> str:
     return _dumps({"success": False, "error": "工具调用失败，请按提示修正参数后重试一次：" + detail[:800]})
 
 
-def extract_plan(output: Any) -> Optional[dict]:
-    """从 generate_trip_itinerary 的输出里取出行程数据；不是行程或生成失败时返回 None。
+def extract_plan(output: Any, context: Optional[TripContext] = None) -> Optional[dict]:
+    """从 generate_trip_itinerary 的输出里取出完整行程；不是行程或生成失败时返回 None。
 
+    完整行程存在本轮的 context.plans 里，工具输出只带编号 plan_no（模型看的是精简版）；
+    没有上下文时工具会把完整行程直接放在 plan 字段里。
     chat 流式接口据此推送 plan 事件，服务端据此把行程随助手消息一起保存。
     """
     if isinstance(output, str):
@@ -57,7 +63,30 @@ def extract_plan(output: Any) -> Optional[dict]:
     if not isinstance(output, dict) or output.get("success") is not True:
         return None
     plan = output.get("plan")
+    no = output.get("plan_no")
+    if plan is None and context is not None and isinstance(no, int) and 0 < no <= len(context.plans):
+        plan = context.plans[no - 1]
     return plan if isinstance(plan, dict) and plan.get("kind") == PLAN_KIND else None
+
+
+def plan_view(plan: dict) -> dict:
+    """给模型看的行程：每项只留时间、标题与提醒，以及未安排、必吃等结论。
+    完整行程（坐标、营业时间原文、交通、描述…）直接推给前端，模型回复里本就不复述；
+    第 4 轮测评每次返回平均 7.8KB、最大 11KB，多轮对话时还会随会话记忆每轮重发。"""
+    def item(it: dict) -> str:
+        text = f"{it['time_slot']} {it['title']}"
+        notes = list(it.get("warnings") or [])
+        if (it.get("description") or "").startswith("满足必吃"):
+            notes.insert(0, it["description"].split("。")[0])
+        return text + (f"（{'；'.join(notes)}）" if notes else "")
+
+    return {
+        "summary": plan["summary"], "notes": plan["notes"],
+        "unassigned_spots": plan["unassigned_spots"], "unmet_must_eat": plan["unmet_must_eat"],
+        "total_cost": plan["total_cost"], "has_unknown_cost": plan["has_unknown_cost"],
+        "days": [{"day": d["day_number"], "date": d["date"], "items": [item(it) for it in d["items"]]}
+                 for d in plan["days"]],
+    }
 
 def next_step(gaps: List[dict]) -> str:
     """把缺口清单翻译成模型可直接执行的一步：并行补检索，然后只重排一次。"""
@@ -89,9 +118,14 @@ FOOD_TYPES = "050000"  # 餐饮大类；050400/050900 的实际语义与名称�
 _adcode_cache: Dict[str, str] = {}
 
 
-def _repo(ctx: RunContextWrapper) -> PoiRepo:
+def _trip_context(ctx: RunContextWrapper) -> Optional[TripContext]:
     context = getattr(ctx, "context", None)
-    if isinstance(context, TripContext):
+    return context if isinstance(context, TripContext) else None
+
+
+def _repo(ctx: RunContextWrapper) -> PoiRepo:
+    context = _trip_context(ctx)
+    if context:
         return context.repo
     # 没传 context 时退化为空仓库：每次按 id 回查高德，结果仍然正确，只是多几次请求
     logger.log("[repo] run context missing, falling back to an empty PoiRepo")
@@ -261,8 +295,12 @@ def generate_trip_itinerary(
     spots: Annotated[str, "必填。要去的景点，JSON 列表，元素为搜索结果里的 id，或带判断信息的对象（用户点名的景点加 \"must\": true，"
                           "放不下时最后才舍弃；你自己补充推荐的景点不要加 must。总数宜达到「天数 × 每日上限」，否则会整段空档）："
                           "{\"id\": \"...\", \"duration_minutes\": 180, \"best_period\": \"morning\"}；"
-                          "best_period 可选 'morning'(宜早去，如动物园/早市/观日出/登山) | 'evening'(宜傍晚夜间，如古街夜景/夜市街区/灯光秀)；"
+                          "best_period 可选 'morning'(宜早去，如动物园/早市/观日出/登山) | 'evening'(宜傍晚夜间，如古街夜景/夜市街区/灯光秀) | "
+                          "'sunset'(看日落，如观景塔/江边/海边；排在日落前后、晚饭顺延到游完后)；"
                           "用户只说了连锁品牌、没指定哪家店（如「先锋书店」）时加 \"any_branch\": true，算法按当天路线换成最顺路的分店；"
+                          "用户指定了某天去（如「第二天去长隆」「把第二天的陈家祠换成长隆」）时加 \"day\": 2，只排在那一天，放不下会写进未安排；"
+                          "单向参观、进出口不同的景区（如故宫午门进、神武门出）可加 \"entry_id\" / \"exit_id\"："
+                          "用 search_scenic_spots 搜出该门的 POI（如「故宫博物院-神武门」）传它的 id，算法按出口算去下一站的通勤；不确定就不加；"
                           "\"tips\" 可写一两句该景点的实用经验（预约方式、门票、从哪个地铁站/门进、最佳时段，≤60 字），"
                           "原样附在行程卡片上并标明未经核实，不要写营业时间（以检索数据为准）"] = "",
     foods: Annotated[str, "必填。餐饮候选，JSON 列表，元素为 search_food_and_snacks 返回的 id；"
@@ -273,12 +311,14 @@ def generate_trip_itinerary(
     pace: Annotated[str, "游玩节奏：'relaxed'(轻松慢游，白天每日≤2点) | 'balanced'(均衡标准，白天每日≤3点) | 'compact'(特种兵打卡，白天每日≤4点)；晚餐后的夜游另加 1 个"] = "balanced",
     departure_time: Annotated[str, "返程车次/航班出发时间 'HH:MM'（如「15:30」），用于保证最后一天提前到站；用户未说明可留空"] = "",
     must_eat: Annotated[str, "用户点名要吃的美食，逗号分隔（如用户说想吃 A 和 B，就传「A,B」）；"
-                             "算法优先安排、全程只排一次；排不进的会在 plan.unmet_must_eat 里说明原因。用户没点名就留空"] = "",
+                             "算法优先安排、全程只排一次；排不进的会在 itinerary.unmet_must_eat 里说明原因。用户没点名就留空"] = "",
     backup_spots: Annotated[str, "可选。备选景点 id 的 JSON 列表（格式同 spots），如各片区附近的公园、街区、小型博物馆；"
                                  "算法只在某天出现 1 小时以上空档且顺路时才加入，用不上不会出现在行程里"] = "",
     avoid: Annotated[str, "忌口关键词，逗号分隔，含这些词的餐厅（店名/品类）会被排除。只按用户明确说的忌口填，"
                           "如不吃辣可填「辣,麻辣,火锅,串串,冒菜,香锅,干锅,钵钵鸡」；没有忌口留空"] = "",
     max_cost_per_meal: Annotated[float, "每餐人均上限（元），超过的餐厅会被排除；用户没说预算填 0"] = 0,
+    mobility: Annotated[str, "出行人群：'limited'(同行有老人、小孩或行动不便：道路 1 公里以上改打车，节奏最多到均衡) | "
+                             "'normal'(用户说不用照顾了)；没提到就留空，沿用本会话之前的设置"] = "",
 ) -> str:
     """调用纯 Python 排程算法，生成不折返、按天切分、带双轨餐饮（正餐+特色小吃/夜市）的完整行程。
 
@@ -296,9 +336,18 @@ def generate_trip_itinerary(
                if not ok]
     if missing:
         return _dumps({"success": False, "error": "缺少必填参数：" + "、".join(missing) + "。补齐后重新调用。"})
+    trip_ctx = _trip_context(ctx)
+    if trip_ctx and trip_ctx.plans_made >= MAX_PLANS_PER_REPLY:
+        return _dumps({"success": False, "error": (
+            f"本轮回复已生成 {trip_ctx.plans_made} 份行程，不再重排。直接回复用户：用户看到的是上一份行程，"
+            "其中未安排的地点及原因如实说明，想做的调整作为建议提出，由用户决定是否重新规划。")})
+    repo = _repo(ctx)
+    if mobility in MOBILITY_VALUES:
+        repo.prefs["mobility"] = mobility
+    mobility = repo.prefs.get("mobility", "normal")
     try:
         budget = max_cost_per_meal if max_cost_per_meal and max_cost_per_meal > 0 else None
-        inputs = build_trip_inputs(_repo(ctx), spots, foods, backup_spots,
+        inputs = build_trip_inputs(repo, spots, foods, backup_spots,
                                    hotel_id=hotel_id, departure_id=departure_id, must_eat=must_eat,
                                    avoid=avoid, max_cost_per_meal=budget, city=city)
         points = [p for p in (inputs.hotel, inputs.departure) if p]
@@ -314,13 +363,14 @@ def generate_trip_itinerary(
             departure_time=departure_time or None,
             travel=travel,
             price_sensitive=budget is None,
+            mobility=mobility,
         )
         scheduler.notes.extend(inputs.notes)
         logger.log("[itinerary-input] " + _dumps({
-            "city": city, "days": total_days, "pace": pace, "hotel": hotel_id, "must_eat": must_eat,
+            "city": city, "days": total_days, "pace": pace, "mobility": mobility, "hotel": hotel_id, "must_eat": must_eat,
             "avoid": avoid, "max_cost": budget,
             "departure": [departure_id, departure_time],
-            "spots": [[s.poi_id, s.name, s.duration_minutes, s.best_period, s.must_visit, len(s.branches)]
+            "spots": [[s.poi_id, s.name, s.duration_minutes, s.best_period + ("/sunset" if s.sunset else ""), s.must_visit, len(s.branches), s.day]
                       for s in inputs.spots],
             "backups": [b.poi_id for b in inputs.backups],
             "foods": len(inputs.restaurants), "skipped": inputs.skipped,
@@ -329,8 +379,16 @@ def generate_trip_itinerary(
                                   must_eat=split_must_eat(must_eat))
         logger.log(f"[itinerary-routing] amap /distance requests={travel.requests}")
         plan.unassigned_spots.extend(inputs.skipped)
-        return _dumps({"success": True, "display": DISPLAY_NOTE, "plan": render_dict(plan),
-                       "gaps": plan.gaps, "next_step": next_step(plan.gaps)})
+        full = render_dict(plan)
+        out = {"success": True, "display": DISPLAY_NOTE, "itinerary": plan_view(full),
+               "gaps": plan.gaps, "next_step": next_step(plan.gaps)}
+        if trip_ctx:
+            trip_ctx.plans_made += 1
+            trip_ctx.plans.append(full)
+            out["plan_no"] = len(trip_ctx.plans)
+        else:
+            out["plan"] = full
+        return _dumps(out)
     except json.JSONDecodeError as e:
         return _dumps({"success": False, "error": f"spots / foods 参数不是合法的 JSON：{e}"})
     except ValueError as e:

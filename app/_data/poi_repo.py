@@ -183,6 +183,8 @@ class PoiRepo:
         self._items: Dict[str, PoiRecord] = {}
         self._branches: Dict[Tuple[str, str], List[str]] = {}  # (品牌, 城市) -> 分店 id，同一会话只查一次
         self._lock = threading.Lock()  # 模型并行调用工具时会在多个线程里写入
+        # 会话级的用户约束（如 mobility），随仓库按会话缓存：后续轮次模型漏传参数时沿用，不靠模型每轮都记得
+        self.prefs: Dict[str, str] = {}
 
     def put(self, rec: PoiRecord) -> PoiRecord:
         """写入；同一 POI 被多次检索到时，保留已有的餐饮类型与检索词。"""
@@ -252,5 +254,8 @@ class PoiRepo:
 
 @dataclass
 class TripContext:
-    """随 Runner.run_streamed(context=...) 传入，工具通过 ctx.context 取用。"""
+    """随 Runner.run_streamed(context=...) 传入，工具通过 ctx.context 取用。每轮对话新建一份，repo 按会话共享。"""
     repo: PoiRepo = field(default_factory=PoiRepo)
+    plans_made: int = 0  # 本轮已成功生成的行程份数（见 _tools.MAX_PLANS_PER_REPLY）
+    # 本轮生成的完整行程（render_dict 输出），按工具输出里的 plan_no 取用后推给前端；模型只看精简版（_tools.plan_view）
+    plans: List[dict] = field(default_factory=list)

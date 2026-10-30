@@ -5,6 +5,7 @@
 """
 
 import unittest
+from unittest import mock
 
 import app.engine.scheduler as scheduler_module
 from app.engine import LocationPoint, Spot, TripScheduler, TravelTimes
@@ -58,6 +59,21 @@ class TestSwapRetry(unittest.TestCase):
             plan = self._plan(named)
             spots = [it.title for d in plan.days for it in d.items if it.category == "spot"]
             self.assertTrue(any(named in t for t in spots), (named, spots))
+
+    def test_trials_never_duplicate_or_lose_spots(self):
+        # 对调被采纳后，旧代码还按对调前的位置继续试：同一景点出现两次（如两个「大湖」）、另一个景点凭空消失
+        trials = []
+        orig = TripScheduler._run_days
+
+        def spy(sched, days_spots, *args, **kwargs):
+            trials.append(sorted(s.name for d in days_spots for s in d))
+            return orig(sched, days_spots, *args, **kwargs)
+
+        with mock.patch.object(TripScheduler, "_run_days", spy):
+            self._plan("大湖")
+        self.assertGreater(len(trials), 1)
+        for names in trials:
+            self.assertEqual(names, trials[0], trials)
 
 
 if __name__ == "__main__":

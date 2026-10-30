@@ -46,6 +46,20 @@ class TestChatStreamsPlan(unittest.TestCase):
         self.assertEqual(frames[1].split("\n")[0], "event: plan")
         self.assertEqual(json.loads(frames[1].split("data: ", 1)[1])["city"], "南京")
 
+    def test_plan_taken_from_context_by_number(self):
+        """工具给模型的输出只带 plan_no，完整行程从本轮上下文里取（见 _tools.plan_view）。"""
+        def run_streamed(*args, context=None, **kwargs):
+            context.plans.append(PLAN)  # 相当于排程工具执行时存入
+            out = json.dumps({"success": True, "display": "…", "itinerary": {}, "plan_no": 1})
+            return FakeStream([_tool_event("tool_output", output=out)])
+
+        async def collect():
+            with mock.patch.object(chat.Runner, "run_streamed", side_effect=run_streamed):
+                return [f async for f in chat._event_stream("去南京")]
+        frames = asyncio.run(collect())
+        plans = [json.loads(f.split("data: ", 1)[1]) for f in frames if f.startswith("event: plan")]
+        self.assertEqual(plans, [PLAN])
+
     def test_other_tool_outputs_are_not_plans(self):
         frames = self._frames([
             _tool_event("tool_output", output='{"count": 1, "spots": []}'),

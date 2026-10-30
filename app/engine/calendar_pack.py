@@ -1,12 +1,15 @@
 import itertools
 import re
+from functools import lru_cache
 from datetime import date, timedelta
 from typing import Dict, List, Tuple, Optional
 from .models import LocationPoint, Spot
 from .optimizer import optimize_spots_route
-from .geo import cluster_spots_spatially, estimate_transit, haversine_distance, place_distance
+from .geo import (all_points, area_distance, cluster_spots_spatially, entry_points, estimate_transit, exit_points,
+                  haversine_distance, place_distance)
 from .timeline import day_is_feasible
-from .hours import _WEEKDAY_CHARS, _D, _WD, _RANGE, day_span as _day_span, hours_on_date  # 星期正则与按日营业时间共用
+from .hours import (_WEEKDAY_CHARS, _D, _WD, _RANGE, _WEEKDAY_SPEC_RE, CLOSED_MARK, _resolve, _spec_days, _weekday_part, strip_holiday_notes,  # 星期正则共用
+                    day_span as _day_span, hours_on_date)
 
 # 默认闭馆规则：常见特大博物馆逢周一闭馆
 MONDAY_CLOSED_KEYWORDS = ["博物馆", "博物院", "纪念馆", "美术馆", "科技馆"]
@@ -17,10 +20,6 @@ _CLOSED_WORDS = r"\s*(?:全天)?(?:闭馆|休馆|闭园|休息|休业|不开放|
 _CLOSED_RANGE_RE = re.compile(_RANGE + _CLOSED_WORDS)
 # 「周一闭馆」「每周一、二休息」
 _CLOSED_LIST_RE = re.compile(rf"(?:周|星期|礼拜)({_D}(?:[、,，和及]?(?:周|星期|礼拜)?{_D})*)" + _CLOSED_WORDS)
-# 「周二至周日 09:00-17:00」
-_OPEN_RANGE_RE = re.compile(_RANGE)
-# 单个开放日必须紧跟时刻或「开放/营业」，避免把别处提到的星期误当开放日
-_OPEN_SINGLE_RE = re.compile(_WD + r"\s*(?=\d|开放|营业)")
 
 
 # 「墓室仅周二至周五开放」「地宫仅周末开放」：只说某个子设施，不代表整个景区的开放日。
@@ -43,7 +42,7 @@ def parse_closed_days(open_time: str) -> Optional[List[int]]:
     - 「周二至周日 09:00-17:00」→ 开放日之外的都算闭馆 → [0]
     - 文本里没有可识别的星期信息 → None（调用方再走名称关键词兜底）
     """
-    text = _strip_partial_clauses(open_time or "")
+    text = strip_holiday_notes(_strip_partial_clauses(open_time or ""))
     closed: set = set()
     for a, b in _CLOSED_RANGE_RE.findall(text):
         closed.update(_day_span(a, b))
@@ -52,25 +51,27 @@ def parse_closed_days(open_time: str) -> Optional[List[int]]:
         closed.update(_WEEKDAY_CHARS[c] for c in chars if c in _WEEKDAY_CHARS)
     text = _CLOSED_LIST_RE.sub(" ", text)
 
-    open_days: set = set()
-    for a, b in _OPEN_RANGE_RE.findall(text):
-        open_days.update(_day_span(a, b))
-    for c in _OPEN_SINGLE_RE.findall(_OPEN_RANGE_RE.sub(" ", text)):
-        open_days.add(_WEEKDAY_CHARS[c])
-
-    if open_days:
-        closed |= set(range(7)) - open_days
+    # 某天开不开直接用 hours_on_date 的同一判定（_weekday_part）：条款不覆盖当天时，先看条款前不带星期的通用时刻。
+    # 只按「列出的开放日」反推会误判：南京古鸡鸣寺「07:00-17:00；月初周一、15开放时间为:05:30-17:00」被当成只有周一开放
+    specs = list(_WEEKDAY_SPEC_RE.finditer(text))
+    bodies = [text[m.end():specs[i + 1].start() if i + 1 < len(specs) else len(text)] for i, m in enumerate(specs)]
+    if any(_resolve(body) not in (None, CLOSED_MARK) for body in bodies):
+        closed |= {wd for wd in range(7) if _weekday_part(text, wd) == CLOSED_MARK}
     elif not closed:
         return None
     return sorted(closed)
 
 
-def is_spot_closed_on_date(spot: Spot, target_date: date) -> Tuple[bool, str]:
-    """判断景点在指定日期是否闭馆。
+def is_spot_closed_on_date(spot: Spot, target_date: date, ignore_pin: bool = False) -> Tuple[bool, str]:
+    """判断景点在指定日期是否闭馆（去不了）。
 
     周一 weekday() == 0。
+    用户指定了日期（spot.fixed_date）的，其他日子一律按去不了处理：分天、对调、空档补点、校验器
+    都沿用这一个判定，不必各自再写一遍。ignore_pin=True 时只看营业时间（用于闭馆提示文案）。
     优先级：spot.closed_days > 营业时间文本里的星期信息 > 名称含博物馆等关键词时默认周一闭馆。
     """
+    if spot.fixed_date and not ignore_pin and target_date != spot.fixed_date:
+        return True, f"【{spot.name}】按要求安排在 {spot.fixed_date.strftime('%m-%d')}，其他日子不排"
     weekday = target_date.weekday()
     closed_list = list(spot.closed_days)
     if not closed_list:
@@ -103,7 +104,10 @@ def _centroid(spots: List[Spot], fallback: LocationPoint) -> Tuple[float, float]
     return sum(s.lng for s in spots) / len(spots), sum(s.lat for s in spots) / len(spots)
 
 
-EXACT_MAX_SPOTS = 10      # 景点数不超过它时穷举所有分天方案（状态压缩 DP，10 个点约百万次运算，<1s）
+# 景点数不超过它时穷举所有分天方案（状态压缩 DP）。紧凑档 3 天、模型按「天数 × 上限」补满就是 12 个，
+# 旧值 10 让这种常见情况落到启发式：随机 11~12 个点的测试里平均少排 1.4 个点、丢 1.4 个点名景点、每天多空 50 分钟。
+# 12 个点 4 天约 0.4 秒，含夜游与连锁分店的最坏情况约 3.6 秒
+EXACT_MAX_SPOTS = 12
 UNASSIGNED_PENALTY = 10_000  # 少排一个景点的代价，远大于任何通勤差：先保证排进去的最多，再比路程
 # 用户点名（must_visit）的景点额外的舍弃代价：放不下时先舍弃模型补充的。实测广州「把陈家祠换成长隆」，
 # 5 个点放不下时引擎舍弃了最远的长隆——恰恰是用户这轮点名要加的——模型只好自己删别的景点重排。
@@ -123,10 +127,56 @@ EVENING_DAYTIME_PENALTY = 90  # 宜傍晚的景点只能放在晚上不可用的
 SAME_AREA_KM = 1.2
 SAME_AREA_SPLIT_PENALTY = 60
 _PERIOD_RANK = {"morning": 0, "evening": 2}
+# 估算分钟数相差不超过 ROUTE_TIE_MIN 的路线视为打平，选总公里数少的：步行段按 13 分钟/km、打车段另加 5 分钟起步，
+# 分钟数会把「多打两段车」和「走两段路」算成差不多。南京实测第 3 天「老门东 → 总统府 → 夫子庙」71 分钟 14.5km，
+# 「总统府 → 老门东 → 夫子庙」72 分钟 9.4km，旧版选了前者，来回坐车
+ROUTE_TIE_MIN = 5
+
+
+# 子景点：名称里含另一个所选景点的名称（去掉「景区」等后缀），且相距不超过 SUB_SPOT_MAX_KM。
+# 南京实测：「钟山风景名胜区中山陵景区音乐台」就在中山陵景区里，模型没给时长时按独立景点 120 分钟算，
+# 和中山陵一起放不下，被拆到另一天 07:00 专程打车去。识别出来后时长按 SUB_SPOT_DEFAULT_MIN（trip_input）。
+# 距离上限 1.5km：音乐台离中山陵 0.91km；取 3km 时「西湖文化广场」这类只是名字带景区名的地点也会被认成子景点
+SUB_SPOT_MAX_KM = 1.5
+_AREA_SUFFIX_RE = re.compile(r"(?:风景名胜区|风景区|旅游区|景区|景点)$")
+_BRACKET_RE = re.compile(r"[（(][^）)]*[）)]")
+
+
+def is_sub_spot(child: Spot, parent: Spot) -> bool:
+    """child 是不是 parent 景区里的一个点。括号里的内容（多为分店名，如「先锋书店(玄武湖分店)」）不参与比较。"""
+    return _is_sub_spot(child.name, parent.name, _points_key(child, all_points), _points_key(parent, all_points))
+
+
+def cap_spots(spots: List[Spot]) -> List[Spot]:
+    """计入每日景点名额的景点：所属景区也在同一天的子景点不算（凤凰古城里的虹桥、沱江泛舟是顺带游的；
+    第 4 轮测评虹桥因「名额已满」没排上，当天下午却空着 2 小时）。两个互相包含（「中山陵」「中山陵景区」）时都算。"""
+    return [s for s in spots
+            if not any(o is not s and is_sub_spot(s, o) and not is_sub_spot(o, s) for o in spots)]
+
+
+@lru_cache(maxsize=10_000)
+def _is_sub_spot(child: str, parent: str, child_pts: tuple, parent_pts: tuple) -> bool:
+    # 按名称与坐标缓存：分天穷举时每种组合都要排一次路线
+    core = _AREA_SUFFIX_RE.sub("", _BRACKET_RE.sub("", parent)).strip()
+    if len(core) < 2 or child == parent or core not in _BRACKET_RE.sub("", child):
+        return False
+    return min(haversine_distance(x[0], x[1], y[0], y[1]) for x in child_pts for y in parent_pts) <= SUB_SPOT_MAX_KM
+
+
+def _points_key(p, points=all_points) -> tuple:
+    return tuple((g.lng, g.lat) for g in points(p))
+
+
+@lru_cache(maxsize=200_000)
+def _leg_between(ka: tuple, kb: tuple) -> int:
+    # 与 place_distance 相同：取最近的一对出入口（ka 是出发地能离开的位置，kb 是目的地能进入的位置）
+    return estimate_transit(min(haversine_distance(x[0], x[1], y[0], y[1]) for x in ka for y in kb))[0]
 
 
 def _leg(a, b) -> int:
-    return estimate_transit(place_distance(a, b))[0]
+    """分天阶段的估算车程。按坐标值缓存（不按对象 id，多线程、对象回收后都不会串）：
+    12 个景点穷举时同一对地点要算上百万次，不缓存时这里占分天耗时的一半以上。"""
+    return _leg_between(_points_key(a, exit_points), _points_key(b, entry_points))
 
 
 def _safe_leg(a, b) -> float:
@@ -155,13 +205,37 @@ def _route_with_night(hotel: LocationPoint, spots: List[Spot], night: set,
         routes.append((sum(leg(a, b) for a, b in zip(pts, pts[1:])), list(perm)))
     if not routes:
         return list(spots), 0, True
+    # 子景点与所属景区紧挨着游（中山陵 → 南博 → 音乐台 等于出了景区再进一次）；怎么排都挨不上时不强求
+    pairs = [(a, b) for a in spots for b in spots if is_sub_spot(a, b)]
+    if pairs:
+        adjacent = [r for r in routes
+                    if all(abs([id(x) for x in r[1]].index(id(a)) - [id(x) for x in r[1]].index(id(b))) == 1
+                           for a, b in pairs)]
+        routes = adjacent or routes
     routes.sort(key=lambda r: r[0])
-    for cost, perm in routes:
+
+    def timely(perm: List[Spot]) -> bool:
         daytime = [s for s in perm if id(s) not in night]
-        if day_is_feasible(hotel, daytime, [s for s in perm if id(s) in night],
-                           lambda a, b: leg(a, b) * FEASIBILITY_TRAVEL_FACTOR, day):
-            return perm, cost, True
-    return routes[0][1], routes[0][0], False
+        return day_is_feasible(hotel, daytime, [s for s in perm if id(s) in night],
+                               lambda a, b: leg(a, b) * FEASIBILITY_TRAVEL_FACTOR, day)
+
+    def km(perm: List[Spot]) -> float:
+        pts = [hotel, *perm, hotel]
+        return sum(place_distance(a, b) for a, b in zip(pts, pts[1:]))
+
+    first = next((i for i, (_, perm) in enumerate(routes) if timely(perm)), None)
+    if first is None:
+        return routes[0][1], routes[0][0], False
+    shortest = routes[first][0]
+    best_cost, best = routes[first]
+    best_km = km(best)
+    for cost, perm in routes[first + 1:]:
+        if cost > shortest + ROUTE_TIE_MIN:
+            break
+        k = km(perm)
+        if k < best_km - 0.5 and timely(perm):
+            best_cost, best, best_km = cost, perm, k
+    return best, best_cost, True
 
 
 def split_evening(spots: List[Spot], evening_ok: bool, hotel: Optional[LocationPoint] = None,
@@ -217,6 +291,25 @@ def pick_branches(hotel: LocationPoint, spots: List[Spot], evening_ok: bool = Tr
     return chosen
 
 
+def _insertion_km(v: Spot, others: List[LocationPoint]) -> float:
+    """把 v 插进 others 里某两点之间（可以是同一点，如住处 → v → 住处）多走的直线距离，取最小。"""
+    return min(place_distance(p, v) + place_distance(v, q) - (place_distance(p, q) if p is not q else 0)
+               for p in others for q in others)
+
+
+def pick_branches_near(hotel: LocationPoint, spots: List[Spot], day: Optional[date] = None) -> List[Spot]:
+    """pick_branches 的快速版，供分天穷举用：每家分店只按「插进当天其他地点之间多走多远」比，不逐家重排整天路线。
+    12 个景点 4 天、含 2 个连锁店时，逐家重排要 12 秒，这样约 1.5 秒；选出的组合随后仍按完整路线校验能否走通。"""
+    chosen = list(spots)
+    for i, s in enumerate(spots):
+        if not s.branches:
+            continue
+        others = [hotel, *chosen[:i], *chosen[i + 1:]]
+        variants = [v for v in (s, *s.branches) if v is s or not (day and is_spot_closed_on_date(v, day)[0])]
+        chosen[i] = min(variants, key=lambda v: _insertion_km(v, others))
+    return chosen
+
+
 def _best_day_route(hotel: LocationPoint, spots: List[Spot], evening_ok: bool = True,
                     day: Optional[date] = None) -> Tuple[List[Spot], int, bool]:
     """当天景点的最短游览顺序（住宿出发、回到住宿）及往返通勤分钟数。
@@ -245,9 +338,7 @@ def _exact_split(
     end_points[d] 非空时（返程日的车站），可行性按「最后一个景点 → 车站」的实际估算距离判断。
     """
     n, days = len(spots), len(date_list)
-
-    def leg(a, b) -> int:
-        return estimate_transit(place_distance(a, b))[0]
+    leg = _leg
 
     def feasible(order: List[Spot], night: set, d: int) -> bool:
         # 只算白天：晚餐后的夜游不占白天预算（它们另受 EVENING_WINDOW_MIN 约束）。
@@ -267,33 +358,37 @@ def _exact_split(
     # 键含各景点当天的营业时间：按星期分段营业的景点在不同日子结果不同，其余日子照常命中缓存。
     # 值为 (游览顺序, 通勤分钟, 时间上是否走得通, 晚上游, 改白天)，与 _best_day_route 的算法相同
     route_cache: Dict[tuple, tuple] = {}
+    n_sub = n - len(cap_spots(spots))  # 子景点不占名额，一天最多可多排这么多个
     near_pairs = [(i, j) for i in range(n) for j in range(i + 1, n)
-                  if place_distance(spots[i], spots[j]) <= SAME_AREA_KM]
+                  if area_distance(spots[i], spots[j]) <= SAME_AREA_KM]
     for d in range(days):
         opts: Dict[int, Tuple[float, List[Spot]]] = {0: (0.0, [])}
         open_idx = [i for i in range(n) if not is_spot_closed_on_date(spots[i], date_list[d])[0]]
         # 每日景点数只限白天：晚餐后的夜游另加 1 个，不占白天名额（旧版夜游占名额，南京第 3 天白天只排 2 个、下午空 2.5 小时）
-        for k in range(1, min(max_spots_per_day + 1, len(open_idx)) + 1):
+        for k in range(1, min(max_spots_per_day + 1 + n_sub, len(open_idx)) + 1):
             for combo in itertools.combinations(open_idx, k):
-                if sum(spots[i].best_period != "evening" for i in combo) > max_spots_per_day:
+                counted = cap_spots([spots[i] for i in combo])
+                if (sum(s.best_period != "evening" for s in counted) > max_spots_per_day
+                        or len(counted) > max_spots_per_day + 1):
                     continue
                 mask = sum(1 << i for i in combo)
                 key = (mask, evening_ok[d], tuple(hours_on_date(spots[i].open_time, date_list[d]) for i in combo))
                 if any(spots[i].branches for i in combo):
                     key += (date_list[d],)  # 各分店营业时间不同，按日期区分
                 if key not in route_cache:
-                    chosen = pick_branches(hotel, [spots[i] for i in combo], evening_ok[d], date_list[d])
+                    chosen = pick_branches_near(hotel, [spots[i] for i in combo], date_list[d])
                     night_, moved_ = split_evening(chosen, evening_ok[d], hotel, date_list[d])
                     route_cache[key] = (*_route_with_night(hotel, chosen, {id(s) for s in night_}, date_list[d]),
                                         night_, moved_)
                 order, travel, timely, night, moved = route_cache[key]
-                if (len(order) - len(night) > max_spots_per_day or not timely
+                night_ids = {id(s) for s in night}
+                if (sum(id(s) not in night_ids for s in cap_spots(order)) > max_spots_per_day or not timely
                         or not feasible(order, {id(s) for s in night}, d)):
                     continue  # 白天超过景点数上限、营业时段对不上（怎么排都走不通），或白天预算放不下
                 load = travel + sum(s.duration_minutes for s in order)
                 # 宜傍晚却只能白天去的（返程日、或当晚已排满夜游），每个计一笔代价：能避开就避开。
                 # 但和当晚的夜游景点步行可达时不算（老门东下午逛、夫子庙晚上逛，正是同一片区的合理安排）
-                moved = [m for m in moved if not any(place_distance(m, x) <= SAME_AREA_KM for x in night)]
+                moved = [m for m in moved if not any(area_distance(m, x) <= SAME_AREA_KM for x in night)]
                 # 同片区被拆开：这一天含其中一个、不含另一个；两边的天各计一半，合起来每对一笔
                 cut = sum(1 for i, j in near_pairs if (mask >> i & 1) != (mask >> j & 1))
                 opts[mask] = (travel + BALANCE_WEIGHT_SQ * load * load + EVENING_DAYTIME_PENALTY * len(moved)
@@ -353,11 +448,26 @@ def split_spots_by_time_and_calendar(
     date_list = [start_date + timedelta(days=d) for d in range(total_days)]
 
     def unassigned_reason(s: Spot) -> str:
+        if s.fixed_date:
+            n = (s.fixed_date - start_date).days + 1
+            if is_spot_closed_on_date(s, s.fixed_date, ignore_pin=True)[0]:
+                return f"指定的第 {n} 天（{s.fixed_date.strftime('%m-%d')}）可能闭馆"
+            return f"指定在第 {n} 天，" + generic_reason(s)
+        return generic_reason(s)
+
+    def generic_reason(s: Spot) -> str:
         if all(is_spot_closed_on_date(s, d)[0] for d in date_list):
             return "行程日期内均可能闭馆"
         need = estimate_route_minutes(hotel, [s])
-        if all(need > budgets[i] for i, d in enumerate(date_list) if not is_spot_closed_on_date(s, d)[0]):
+        open_days = [(i, d) for i, d in enumerate(date_list) if not is_spot_closed_on_date(s, d)[0]]
+        if all(need > budgets[i] for i, d in open_days):
             return f"可用游玩时间不足（含路程约需 {need} 分钟）"
+        # 单独排这一个都对不上营业时间（白天、夜游都试），说清楚是营业时间的问题，而不是笼统的「排满了」
+        night_ok = list(evening_ok or [True] * total_days)
+        if not any(day_is_feasible(hotel, [s], [], _safe_leg, d)
+                   or (s.best_period == "evening" and night_ok[i] and day_is_feasible(hotel, [], [s], _safe_leg, d))
+                   for i, d in open_days):
+            return f"营业时间（{s.open_time}）内放不下 {s.duration_minutes} 分钟的游览"
         return f"每日白天景点数（≤{max_spots_per_day}，夜游另加 1 个）或游玩时长已排满"
 
     if len(spots) <= EXACT_MAX_SPOTS:
@@ -371,7 +481,7 @@ def split_spots_by_time_and_calendar(
             if id(s) not in placed:
                 unassigned.append((s, unassigned_reason(s)))
                 continue
-            closed = [d for d in date_list if is_spot_closed_on_date(s, d)[0]]
+            closed = [d for d in date_list if is_spot_closed_on_date(s, d, ignore_pin=True)[0]]
             if closed:
                 d = placed[id(s)]
                 calendar_warnings.append(
@@ -380,7 +490,16 @@ def split_spots_by_time_and_calendar(
                 )
         return chunks, unassigned, calendar_warnings
 
-    # 景点太多时穷举太慢，退回启发式：聚类 → 闭馆对调 → 装箱
+    # 景点太多时穷举太慢，退回启发式：聚类 → 闭馆对调 → 装箱。
+    # 名额与预算的口径与穷举一致：白天 ≤ max_spots_per_day，夜游另加 1 个、不占白天预算
+    def over_cap(chunk: List[Spot]) -> bool:
+        counted = cap_spots(chunk)
+        daytime = sum(x.best_period != "evening" for x in counted)
+        return daytime > max_spots_per_day or len(counted) > max_spots_per_day + 1
+
+    def day_minutes(chunk: List[Spot]) -> int:
+        night = next((x for x in chunk if x.best_period == "evening"), None)
+        return estimate_route_minutes(hotel, [x for x in chunk if x is not night])
 
     # 1. 纯数学空间层次聚类：按地理距离将 M 个景点聚为 total_days 个紧密簇
     raw_chunks = cluster_spots_spatially(hotel, spots, total_days, max_cluster_minutes=max(budgets))
@@ -419,28 +538,43 @@ def split_spots_by_time_and_calendar(
                 chunk.remove(s)
                 pool.append(s)
         chunk[:] = optimize_spots_route(hotel, chunk)[0]
-        while chunk and (
-            len(chunk) > max_spots_per_day
-            or estimate_route_minutes(hotel, chunk) > budgets[day_idx]
-        ):
+        while chunk and (over_cap(chunk) or day_minutes(chunk) > budgets[day_idx]):
             c_lng, c_lat = _centroid(chunk, hotel)
-            # 优先拿出离本日重心最远的点（最可能造成折返）
-            far = max(chunk, key=lambda x: haversine_distance(c_lng, c_lat, x.lng, x.lat))
+            # 先拿没点名的，其中离本日重心最远的优先（最可能造成折返）；旧版不看 must，点名的景点常被挤掉
+            far = max(chunk, key=lambda x: (not x.must_visit, haversine_distance(c_lng, c_lat, x.lng, x.lat)))
             chunk.remove(far)
             pool.append(far)
             chunk[:] = optimize_spots_route(hotel, chunk)[0]
 
-    # 再把拿出来的点放回有余量的天，时长长的先放
-    for s in sorted(pool, key=lambda x: -x.duration_minutes):
+    def _swap_out_optional(s: Spot, chunks: List[List[Spot]]) -> Optional[Tuple[int, Spot]]:
+        """找一天、换掉其中一个没点名的景点后能放下 s；有多种换法时换离 s 最近的那天、时长最长的那个。"""
+        best, best_key = None, None
+        for day_idx, chunk in enumerate(chunks):
+            if is_spot_closed_on_date(s, date_list[day_idx])[0]:
+                continue
+            c_lng, c_lat = _centroid(chunk, hotel)
+            for out in chunk:
+                if out.must_visit or out.fixed_date:
+                    continue
+                rest = [x for x in chunk if x is not out]
+                if over_cap(rest + [s]) or day_minutes(optimize_spots_route(hotel, rest + [s])[0]) > budgets[day_idx]:
+                    continue
+                key = (haversine_distance(c_lng, c_lat, s.lng, s.lat), -out.duration_minutes)
+                if best_key is None or key < best_key:
+                    best, best_key = (day_idx, out), key
+        return best
+
+    # 再把拿出来的点放回有余量的天：指定了日期的先放（只有一天可选），其次点名的，再次时长长的
+    for s in sorted(pool, key=lambda x: (x.fixed_date is None, not x.must_visit, -x.duration_minutes)):
         best_day, best_dist = None, float("inf")
         for day_idx in range(total_days):
             chunk = raw_chunks[day_idx]
-            if len(chunk) >= max_spots_per_day:
+            if over_cap(chunk + [s]):
                 continue
             if is_spot_closed_on_date(s, date_list[day_idx])[0]:
                 continue
             trial = optimize_spots_route(hotel, chunk + [s])[0]
-            if estimate_route_minutes(hotel, trial) > budgets[day_idx]:
+            if day_minutes(trial) > budgets[day_idx]:
                 continue
             c_lng, c_lat = _centroid(chunk, hotel)
             d = haversine_distance(c_lng, c_lat, s.lng, s.lat)
@@ -448,6 +582,11 @@ def split_spots_by_time_and_calendar(
                 best_day, best_dist = day_idx, d
         if best_day is not None:
             raw_chunks[best_day][:] = optimize_spots_route(hotel, raw_chunks[best_day] + [s])[0]
+        elif s.must_visit and (swap := _swap_out_optional(s, raw_chunks)):
+            # 点名的放不下时，换掉某天一个没点名的（随机压力测试：必去的博物馆没排上，没点名的景区却占着一整天）
+            day_idx, out = swap
+            raw_chunks[day_idx][:] = optimize_spots_route(hotel, [x for x in raw_chunks[day_idx] if x is not out] + [s])[0]
+            unassigned.append((out, unassigned_reason(out)))
         else:
             unassigned.append((s, unassigned_reason(s)))
 

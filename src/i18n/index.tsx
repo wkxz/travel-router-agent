@@ -16,7 +16,12 @@ interface I18nContextValue {
 const I18nContext = createContext<I18nContextValue>(null!);
 
 function getInitialLang(): Lang {
-  const saved = localStorage.getItem("lang") as Lang | null;
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem("lang"); // 隐私窗口等场景会抛异常
+  } catch {
+    /* storage unavailable */
+  }
   if (saved && (saved === "en" || saved === "zh")) return saved;
   return navigator.language.startsWith("zh") ? "zh" : "en";
 }
@@ -27,7 +32,11 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const toggle = useCallback(() => {
     setLang((prev) => {
       const next = prev === "en" ? "zh" : "en";
-      localStorage.setItem("lang", next);
+      try {
+        localStorage.setItem("lang", next);
+      } catch {
+        /* storage unavailable */
+      }
       return next;
     });
   }, []);

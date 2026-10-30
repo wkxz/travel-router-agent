@@ -129,6 +129,16 @@ class TestServer(unittest.TestCase):
         self.assertIn("AMAP_API_KEY", data["missing"])
         self.assertIn("LLM_MODEL", data["missing"])
 
+    def test_model_error_redacts_secrets(self):
+        class Boom:
+            async def stream_events(self):
+                raise RuntimeError("upstream rejected key sk-test-123456")
+                yield
+        with mock.patch.dict(os.environ, {"LLM_API_KEY": "sk-test-123456"}),                 mock.patch.object(chat.Runner, "run_streamed", return_value=Boom()):
+            res = self.client.post("/chat", json={"message": "hi"}, headers={"X-Conversation-Id": "c-redact"})
+        self.assertIn("error", res.text)
+        self.assertNotIn("sk-test-123456", res.text)
+
     def test_frontend_served_with_spa_fallback(self):
         dist = os.path.join(_TMP, "dist")
         os.makedirs(os.path.join(dist, "assets"), exist_ok=True)
@@ -140,6 +150,13 @@ class TestServer(unittest.TestCase):
             self.assertIn("console.log", self.client.get("/assets/a.js").text)
             self.assertIn("index", self.client.get("/some/page").text)
             self.assertIn("index", self.client.get("/../../.env").text)  # 不能读到 dist 之外的文件
+        # 前缀判断的漏洞：同级的 dist-old/ 路径也以 dist 开头
+        sibling = os.path.join(_TMP, "dist-old")
+        os.makedirs(sibling, exist_ok=True)
+        with open(os.path.join(sibling, "secret.txt"), "w", encoding="utf-8") as f:
+            f.write("secret")
+        with mock.patch.object(server, "DIST_DIR", dist):
+            self.assertNotIn("secret", self.client.get("/%2e%2e/dist-old/secret.txt").text)
 
 
 if __name__ == "__main__":

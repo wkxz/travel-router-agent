@@ -11,7 +11,7 @@
 from dataclasses import dataclass
 
 from .models import LocationPoint
-from .geo import haversine_distance, estimate_transit, gate_pair
+from .geo import haversine_distance, estimate_transit, gate_pair, WALKING_MAX_ROAD_KM
 
 
 # 路网距离是直线的 3 倍以上、且多出 2km 以上时视为「绕行明显」：多半隔着海峡、江河、湖泊或封闭区域。
@@ -47,16 +47,18 @@ class Leg:
 class TravelTimes:
     """默认实现：全部按直线距离估算。"""
 
+    # 道路距离不超过它的按步行，否则打车；同行有老人等行动不便时由排程器调低（见 TripScheduler 的 mobility）
+    walk_max_km: float = WALKING_MAX_ROAD_KM
+
     def estimate(self, a: LocationPoint, b: LocationPoint, mode: str = "auto") -> Leg:
         x, y = gate_pair(a, b)
         leg = self.estimate_between(x, y, mode)
         return Leg(leg.minutes, leg.desc + gate_note(a, x, b, y), leg.road_km, True)
 
-    @staticmethod
-    def estimate_between(x: LocationPoint, y: LocationPoint, mode: str = "auto") -> Leg:
+    def estimate_between(self, x: LocationPoint, y: LocationPoint, mode: str = "auto") -> Leg:
         """两个确定坐标之间的直线估算（不再挑出入口）。"""
         dist = haversine_distance(x.lng, x.lat, y.lng, y.lat)
-        minutes, desc = estimate_transit(dist, mode=mode)
+        minutes, desc = estimate_transit(dist, mode=mode, walk_max_km=self.walk_max_km)
         return Leg(minutes, desc, round(dist * 1.3, 2), True)
 
     def leg(self, a: LocationPoint, b: LocationPoint, mode: str = "auto") -> Leg:

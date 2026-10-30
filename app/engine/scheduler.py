@@ -17,13 +17,14 @@ from .models import (
 )
 from .geo import (
     place_distance,
+    sunset_minutes,
     minutes_to_hhmm,
     parse_time_to_minutes,
     find_open_slot,
     check_open_window,
     first_open_minute,
 )
-from .calendar_pack import (split_spots_by_time_and_calendar, is_spot_closed_on_date, split_evening,
+from .calendar_pack import (cap_spots, split_spots_by_time_and_calendar, is_spot_closed_on_date, split_evening,
                             EXACT_MAX_SPOTS, _best_day_route, pick_branches)
 from .validator import validate_plan, InfeasiblePlanError
 from .travel import TravelTimes
@@ -50,6 +51,10 @@ LUNCH_DEFAULT = 12 * 60
 SNACK_EARLIEST = 14 * 60 + 30
 SNACK_LATEST_START = 17 * 60
 SNACK_DURATION = 40
+# 上一顿吃完到下一顿（小吃 / 晚餐 / 告别餐）开始至少隔这么久。第 4 轮测评 12 例有 17 处挨着吃：
+# 午饭 14:25 吃完 14:35 又排小吃、小吃 17:35 吃完 18:00 吃晚饭、游长隆到 15:30 吃午饭后 18:13 又吃晚饭
+MEAL_GAP_MIN = 90
+SNACK_DINNER_SHIFT_MAX = 30  # 为了排下午小吃，晚饭最多顺延这么久（18:00 → 18:30），小吃最晚 16:20 开始
 STATION_BUFFER = 60           # 提前到站/机场的最少缓冲
 MAX_MEAL_DIST_KM = 2.5        # 餐厅离当前位置的直线距离上限，超过宁可「周边自选」也不绕路
 REPEAT_CUISINE_PENALTY = 6.0  # 同一菜系已吃过一次后的降权
@@ -58,6 +63,9 @@ FAST_FOOD_MEAL_PENALTY = 4.0  # 正餐时段降权高德分类为「快餐厅」
 LIGHT_BITE_CATEGORIES = ("咖啡厅", "茶艺馆", "冷饮店", "糕饼店", "甜品店")
 # 店名含这些词的多半不对外营业（青岛实测午餐排进了「某疗养院职工餐厅」）
 NOT_PUBLIC_NAME_WORDS = ("职工餐厅", "员工餐厅", "职工食堂", "员工食堂", "内部餐厅")
+# 空档补点时每日名额按时长算：游玩 ≥ 这么久算 1 个，短的按比例（45 分钟算半个）。分天穷举仍按个数算。
+# 第 4 轮重庆：3 个各 60 分钟的点就算排满，下午空 2.5 小时，备选的鹅岭公园没补进来
+SLOT_FULL_MIN = 90
 SWAP_MAX_TRIES = 12  # 排时间轴掉了景点时，最多试几种跨天对调（每种要整趟重排一次）
 # 小吃档人均超过这个数的多半是正式餐厅（杭州等多城实测：午饭后紧接着又排一家人均 ¥81 的中餐厅当「小吃」）
 SNACK_MAX_COST = 60
@@ -77,6 +85,12 @@ MUST_EAT_MAX_DETOUR_KM = 1.0  # 必吃在绕路不超过这个距离时强制优
                               # 实测 2.5km 太宽：广州陈家祠→沙面路上有绕路 0km 的店，却被强制换成绕路 2.1km 的必吃店
 
 # 这些是高德的笼统分类，不代表具体菜系，不参与菜系去重
+# 高德品类笼统（「中餐厅」）时按店名认菜系。南京实测午餐百味斋素菜馆（中式素菜馆）、晚餐鸡鸣寺素面馆（中餐厅），
+# 一天两顿素食
+# 高德分类认不出、或同一类菜分在不同分类时，按店名 / 分类里的词归类。
+# 火锅：第 4 轮北京，铜锅涮肉一家分类「火锅店」、一家「清真菜馆」，连续两天午餐都排了涮肉
+NAME_CUISINE_WORDS = {"素食": ("素菜", "素面", "素食", "素斋", "斋菜", "斋饭"),
+                      "火锅": ("火锅", "涮")}  # 「涮」：第 7 轮「京门九涮」分类只有「餐饮相关」
 GENERIC_CUISINES = {"", "中餐厅", "餐饮相关场所", "餐饮服务", "外国餐厅", "快餐厅", "综合酒楼", "特色/地方风味餐厅"}
 LEAVE_PREP = 15               # 结束活动到动身前往车站的准备时间
 GAP_FILL_MIN = 60             # 空档 ≥ 60 分钟才尝试顺路加游一个景点
@@ -86,7 +100,17 @@ GAP_MAX_WAIT = 30             # 空档加游时最多等开门 30 分钟
 HOTEL_NEAR_KM = 2.0           # 离住宿点这么近时，建议回酒店休息
 MORNING_HINT_LATEST = 11 * 60  # 宜早去的景点在这之后才开始游览时，提示「改为稍晚前往」
 EVENING_SPOT_TYPICAL = 120   # 判断返程日晚上能否夜游时，按夜游 2 小时估算
+# 没标时段、但行程每天都要这之后才开门的景点（如 18:00 才开的夜市街区、灯光秀）按夜游排。
+# 随机测试里 18:00 开门的景点按白天排必然放不下，被舍弃时还报「景点数已排满」，晚上却整段空着
+EVENING_OPEN_FROM = 17 * 60
+# 看日落的景点：游览时段尽量盖住 [日落 − SUNSET_BEFORE_MIN, 日落 + SUNSET_AFTER_MIN]
+SUNSET_BEFORE_MIN = 60
+SUNSET_AFTER_MIN = 30
 GAP_RETURN_MIN = 150          # 白天行程结束后离晚餐还有 2.5 小时以上、且离住处较远时，先回住处休整
+
+# 同行有老人、小孩或行动不便（mobility="limited"）：道路 1km 以上就打车（平时 2km），节奏最多到均衡档
+LIMITED_WALK_KM = 1.0
+LIMITED_MAX_PACE = "balanced"
 
 # 节奏档位：每日景点上限 + 单日游玩与通勤预算（分钟，不含用餐）
 PACE_PROFILES = {
@@ -107,10 +131,19 @@ def unsuitable_for_meal(r: Restaurant) -> bool:
             or any(w in r.name for w in NOT_PUBLIC_NAME_WORDS))
 
 
+def cap_load(spots: List[Spot]) -> float:
+    """空档补点时算的名额占用：子景点不算（cap_spots），其余按 min(1, 时长 / SLOT_FULL_MIN) 计。"""
+    return sum(min(1.0, s.duration_minutes / SLOT_FULL_MIN) for s in cap_spots(spots))
+
+
 def cuisine_key(r: Restaurant) -> Optional[str]:
-    """菜系去重用的归一化键：优先用命中的必吃美食，其次用高德品类；笼统分类返回 None（不去重）。"""
+    """菜系去重用的归一化键：优先用命中的必吃美食，其次看店名/品类里的菜系词，再次用高德品类；笼统分类返回 None（不去重）。"""
     if r.dish_key:
         return r.dish_key
+    text = f"{r.name} {r.category}"
+    hit = next((key for key, words in NAME_CUISINE_WORDS.items() if any(w in text for w in words)), None)
+    if hit:
+        return hit
     c = (r.cuisine or "").strip()
     return None if c in GENERIC_CUISINES else c
 
@@ -156,6 +189,7 @@ class TripScheduler:
         departure_time: Optional[str] = None,  # 返程车次/航班时间 "HH:MM"
         travel: Optional[TravelTimes] = None,  # 通勤数据源；默认按直线距离估算，工具层注入高德路网
         price_sensitive: bool = True,  # 用户没给预算时为 True：对高价店降权；给了人均上限（已在输入层过滤）时为 False
+        mobility: str = "normal",  # "limited"：同行有老人 / 小孩 / 行动不便
     ):
         self.price_sensitive = price_sensitive
         self.city = city
@@ -164,8 +198,15 @@ class TripScheduler:
         self.hotel = hotel
         self.departure_point = departure_point
         self.pace = pace if pace in PACE_PROFILES else "balanced"
-        self.max_spots_per_day, self.daily_budget_min = PACE_PROFILES[self.pace]
         self.notes: List[str] = []
+        if mobility == "limited":
+            self.travel.walk_max_km = min(self.travel.walk_max_km, LIMITED_WALK_KM)
+            downgraded = self.pace == "compact"
+            if downgraded:
+                self.pace = LIMITED_MAX_PACE
+            self.notes.append(f"已按同行有老人或行动不便调整：道路超过 {LIMITED_WALK_KM:g} 公里改为打车"
+                              + ("，节奏由紧凑降为均衡" if downgraded else "") + "。")
+        self.max_spots_per_day, self.daily_budget_min = PACE_PROFILES[self.pace]
 
         self.start_date = today_cn()
         if start_date:
@@ -310,20 +351,37 @@ class TripScheduler:
                     day.fill_gap(LUNCH_EARLIEST)  # 离开饭还有一会儿：附近能顺路加游就加，否则标出空档
                     day.add_lunch(next_stop=s, earliest=LUNCH_EARLIEST)
                     lunch_done = True
+                n_items = len(day.items)
                 day.place_main_spot(s)
+                if not lunch_done and len(day.items) > n_items and day.t > LUNCH_TRIGGER:
+                    # 上午就开始、要游到午后的大景点（09:00 起 5 小时）：午饭要么在景区里解决，要么拖到两点多。
+                    # 不拆开游览，如实提醒（随机压力测试 300 例里 86 天午饭晚于 13:45）
+                    day.items[-1].warnings.append("游览跨过午饭时间：可在景区内简单用餐，或中途出来吃饭")
 
             if not lunch_done:
                 day.fill_gap(day.lunch_earliest())
                 day.add_lunch(next_stop=day.after_lunch_target())
+            # 看日落的排在晚饭前（第 6 轮广州塔按夜游排到 19:25，天早黑了），其余夜游照旧排在晚饭后
+            sunset = evening.pop(0) if evening and evening[0].sunset else None
             # 夜游景点比住处更近时就别回去了，傍晚直接过去
             dinner_at = day.dinner_time()
-            if not (evening and place_distance(day.loc, evening[0])
+            go_at = day.sunset_go_at(sunset) if sunset else dinner_at
+            if not ((sunset or evening) and place_distance(day.loc, sunset or evening[0])
                     <= place_distance(day.loc, self.hotel)):
-                day.maybe_return_to_hotel(dinner_at - 15)
+                day.maybe_return_to_hotel(go_at - 15)
                 dinner_at = day.dinner_time()  # 回住处后离车站的路程变了，告别餐时间要重算
-            if dinner_at >= DINNER_DEFAULT:  # 告别餐提前时不再加下午小吃，免得两顿挨着
-                day.fill_gap(SNACK_EARLIEST)
-                day.add_snack()
+            if sunset:
+                go_at = day.sunset_go_at(sunset)
+                day.fill_gap(day.snack_window(DINNER_DEFAULT)[0])
+                day.add_snack(latest_start=go_at - SNACK_DURATION)
+                day.fill_gap(go_at)
+                if day.add_spot(sunset, latest_end=EVENING_LATEST_END, not_before=day.sunset_visit_at(sunset)):
+                    evening.insert(0, sunset)  # 日落前后放不下（如当天闭馆、到得太晚）：按夜游再试一次
+                dinner_at = max(day.dinner_time(), day.t)
+            elif dinner_at >= DINNER_DEFAULT:  # 告别餐提前时不再加下午小吃，免得两顿挨着
+                day.fill_gap(day.snack_window(dinner_at)[0])
+                day.add_snack(dinner_at)
+                dinner_at = day.dinner_time()  # 小吃吃得晚时晚饭顺延
             day.fill_gap(dinner_at - 15)
             # 有夜游景点时，晚餐就近选在夜游景点旁边，吃完直接逛
             day.add_dinner(anchor=evening[0] if evening else None, earliest=dinner_at)
@@ -353,11 +411,18 @@ class TripScheduler:
         evening_ok = self._evening_ok()
         tries = 0
         for i, f in dropped:
+            # 每次对调都基于当前采纳的方案；采纳后 f 已不在第 i 天，再按旧位置试会把 f 放两次、把别的景点弄丢
+            accepted = False
             for j, other_day in enumerate(days_spots):
-                if j == i:
+                if j == i or accepted:
                     continue
                 for o in other_day:
-                    if o.best_period == "evening" or (o.must_visit and not f.must_visit) or tries >= SWAP_MAX_TRIES:
+                    if accepted or not any(x is f for x in days_spots[i]):
+                        break
+                    if not any(x is o for x in days_spots[j]):
+                        continue
+                    if (o.best_period == "evening" or (o.must_visit and not f.must_visit) or tries >= SWAP_MAX_TRIES
+                            or f.fixed_date or o.fixed_date):  # 指定了日期的不换到别的天
                         continue
                     trial = [list(d) for d in days_spots]
                     trial[j] = [f if x is o else x for x in trial[j]]
@@ -373,7 +438,7 @@ class TripScheduler:
                     tries += 1
                     result = self._run_days(trial, packed_out, spots, backup_spots, restaurants, exact)
                     if result[0] < best[0]:
-                        best, days_spots = result, trial
+                        best, days_spots, accepted = result, trial, True
         return best
 
     def _infer_hotel(self, spots: List[Spot]) -> LocationPoint:
@@ -385,6 +450,26 @@ class TripScheduler:
         lat = sum(s.lat for s in spots) / len(spots)
         self.notes.append("未提供住宿地点，已按景点地理中心估算起点，建议告知实际住宿位置后重新生成。")
         return LocationPoint(name=f"{self.city}住宿点（按景点中心估算）", lng=lng, lat=lat)
+
+    def _pin_days(self, spots: List[Spot]) -> None:
+        """用户指定的第几天换算成日期（同品牌分店一并指定）。超出行程天数时报错，由模型转告用户或改参数。"""
+        for s in spots:
+            if not s.day:
+                continue
+            if s.day > self.total_days:
+                raise ValueError(f"【{s.name}】指定在第 {s.day} 天，超出了行程天数（{self.total_days} 天）")
+            for v in (s, *s.branches):
+                v.fixed_date = self.start_date + timedelta(days=s.day - 1)
+
+    def _infer_evening(self, spots: List[Spot]) -> None:
+        dates = [self.start_date + timedelta(days=i) for i in range(self.total_days)]
+        for s in spots:
+            if s.best_period:
+                continue
+            opens = [first_open_minute(hours_on_date(s.open_time, d)) for d in dates]
+            known = [o for o in opens if o is not None]
+            if known and min(known) >= EVENING_OPEN_FROM:
+                s.best_period = "evening"
 
     def _departure_ok(self, end_min: int, place: LocationPoint, is_last_day: bool) -> bool:
         """返程日：活动结束后还要来得及赶到车站并留出缓冲。"""
@@ -430,6 +515,8 @@ class TripScheduler:
         must_eat：用户点名的必吃美食；优先安排，排不进的写入 plan.unmet_must_eat 并说明原因。
         """
         self.hotel = self._infer_hotel(spots)
+        self._infer_evening(spots)
+        self._pin_days(spots)
 
         days_spots, packed_out, calendar_warnings = split_spots_by_time_and_calendar(
             hotel=self.hotel,
@@ -542,10 +629,12 @@ class _DayBuilder:
         self.loc: LocationPoint = sched.hotel
         self.items: List[ScheduleItem] = []
         self.spot_names: List[str] = []
+        self.placed: List[Spot] = []  # 已排的景点，算每日名额用（子景点不占名额，见 cap_spots）
         self.cost = 0.0
         self.has_unknown_cost = False
         self.dist = 0.0
         self.skipped_meals: List[str] = []
+        self.last_meal_end: Optional[int] = None
 
         description = f"{curr_date.strftime('%Y-%m-%d')} 开启第 {day_num} 天行程"
         leave_hotel = self._latest_leave_hotel()
@@ -633,6 +722,9 @@ class _DayBuilder:
                                               max_wait=GAP_MAX_WAIT)
             if status is False or start + c.duration_minutes > until:
                 continue
+            # 户外景点只补到日落前：南京实测 11 月底 16:38 补进明孝陵，17:05 天就黑了
+            if not c.is_indoor and start + c.duration_minutes > sunset_minutes(c.lat, c.lng, self.date):
+                continue
             if not self.s._departure_ok(start + c.duration_minutes, c, self.is_last_day):
                 continue
             key = (0 if c.name in self.unassigned else 1, dist)
@@ -652,8 +744,8 @@ class _DayBuilder:
             return
         if place_distance(self.loc, hotel) <= HOTEL_NEAR_KM:
             return
-        if (self.s.pace != "relaxed" and self._best_gap_spot(until)
-                and len(self.spot_names) + self.reserved_spots < self.s.max_spots_per_day):
+        if (self.s.pace != "relaxed" and (cand := self._best_gap_spot(until))
+                and self._cap_allows(cand)):
             return
         leg = self.s.travel.leg(self.loc, hotel)
         arrive = self.t + leg.minutes
@@ -671,14 +763,17 @@ class _DayBuilder:
         self.t = arrive
         self.loc = hotel
 
+    def _cap_allows(self, cand: Spot) -> bool:
+        """再加 cand 是否还在每日景点名额内（子景点不占名额，短景点按时长折算，见 cap_load）。"""
+        return cap_load(self.placed + [cand]) + self.reserved_spots <= self.s.max_spots_per_day + 1e-9
+
     def fill_gap(self, until: int, note: bool = True) -> None:
         """处理 self.t 到 until 之间的空档：时间够就顺路加游，不够就给出建议并把时间轴推到 until。"""
         until, rushing = self._gap_until(until)
         if self.s.pace != "relaxed":
-            while (until - self.t >= GAP_FILL_MIN
-                   and len(self.spot_names) + self.reserved_spots < self.s.max_spots_per_day):
+            while until - self.t >= GAP_FILL_MIN:
                 cand = self._best_gap_spot(until)
-                if cand is None:
+                if cand is None or not self._cap_allows(cand):
                     break
                 if self.s.travel.leg(self.loc, cand).roundabout:
                     self.gap_rejected.add(cand.name)  # 直线近、实际要绕远（隔水等），空档不专程去
@@ -715,7 +810,8 @@ class _DayBuilder:
         hotel_dist = place_distance(self.loc, hotel)
         if hotel_dist <= HOTEL_NEAR_KM:
             return "离住宿点不远，可以回酒店休息一下再出发；也可以在附近街区随意逛逛。"
-        if len(self.spot_names) + self.reserved_spots >= self.s.max_spots_per_day or self.s.pace == "relaxed":
+        if (cap_load(self.placed) + self.reserved_spots > self.s.max_spots_per_day - 0.5  # 连半个都补不下
+                or self.s.pace == "relaxed"):
             advice = "今天的景点已按当前节奏排满，可在附近慢慢逛、找地方喝茶休息，留些体力。"
         else:
             advice = ("附近暂无合适的待选景点，可在周边随意逛逛；"
@@ -725,11 +821,21 @@ class _DayBuilder:
             advice += f"空档较长，也可以先回住处休息（单程约 {t_min} 分钟）。"
         return advice
 
-    def add_spot(self, s: Spot, latest_end: int = SPOT_LATEST_END, filler: bool = False) -> Optional[str]:
-        """追加景点；放不进可行时段时返回原因（调用方列入未安排）。"""
+    def sunset_visit_at(self, s: Spot) -> int:
+        """看日落的景点几点开始游：日落前 SUNSET_BEFORE_MIN 到；游得短的晚些到，留出日落后 SUNSET_AFTER_MIN 的晚霞。"""
+        before = min(SUNSET_BEFORE_MIN, max(s.duration_minutes - SUNSET_AFTER_MIN, s.duration_minutes // 2))
+        return sunset_minutes(s.lat, s.lng, self.date) - before
+
+    def sunset_go_at(self, s: Spot) -> int:
+        return self.sunset_visit_at(s) - self.s.travel.leg(self.loc, s).minutes
+
+    def add_spot(self, s: Spot, latest_end: int = SPOT_LATEST_END, filler: bool = False,
+                 not_before: int = 0) -> Optional[str]:
+        """追加景点；放不进可行时段时返回原因（调用方列入未安排）。not_before：最早几点开始（看日落的景点）。"""
         leg = self.s.travel.leg(self.loc, s)
         t_min, t_desc = leg.minutes, leg.desc
-        status, start, open_msg = find_open_slot(self.t + t_min, s.duration_minutes, hours_on_date(s.open_time, self.date))
+        arrive = max(self.t + t_min, not_before)
+        status, start, open_msg = find_open_slot(arrive, s.duration_minutes, hours_on_date(s.open_time, self.date))
         if status is False:
             return f"到达时已无法在营业时间内游完：{open_msg}"
         end = start + s.duration_minutes
@@ -746,7 +852,7 @@ class _DayBuilder:
         warnings = []
         if status is None:
             warnings.append(open_msg)
-        if start > self.t + t_min:
+        if start > arrive:
             warnings.append(f"到达后需等待开门（{minutes_to_hhmm(start)} 开放）")
         if filler:
             warnings.append("利用空档顺路加游")
@@ -757,7 +863,12 @@ class _DayBuilder:
             warnings.append("宜早去：上午人少、体验更好" if start < MORNING_HINT_LATEST
                             else "宜早去，当天上午已安排其他景点，改为稍晚前往")
         elif s.best_period == "evening":
-            if latest_end == EVENING_LATEST_END:  # 排在晚上
+            sunset = sunset_minutes(s.lat, s.lng, self.date)
+            if s.sunset and latest_end == EVENING_LATEST_END and start <= sunset:
+                warnings.append(f"宜日落前后游览：当天日落约 {minutes_to_hhmm(sunset)}")
+            elif s.sunset and latest_end == EVENING_LATEST_END:
+                warnings.append(f"宜日落前后游览，当天到得晚，赶不上日落（约 {minutes_to_hhmm(sunset)}），改看夜景")
+            elif latest_end == EVENING_LATEST_END:  # 排在晚上
                 warnings.append("宜傍晚/夜间游览")
             elif not self.evening_ok:
                 warnings.append("宜傍晚游览，因当天要赶车改为白天前往")
@@ -783,12 +894,14 @@ class _DayBuilder:
         self.t = end
         self.loc = s
         self.spot_names.append(s.name)
+        self.placed.append(s)
         return None
 
     def _add_meal(self, label: str, category: str, meal_types: Tuple[str, ...], earliest: int,
                   duration: int, placeholder: Optional[str], anchor: Optional[LocationPoint] = None,
                   next_stop: Optional[LocationPoint] = None, must_eat_detour_km: float = MUST_EAT_MAX_DETOUR_KM,
-                  allow_morning_dish: bool = True, max_dist_km: float = MAX_MEAL_DIST_KM) -> bool:
+                  allow_morning_dish: bool = True, max_dist_km: float = MAX_MEAL_DIST_KM,
+                  latest_start: Optional[int] = None) -> bool:
         # 按直线估算挑出、但按真实路段不合适的候选：到店时已打烊，或路网绕行明显（隔水等，见 is_roundabout）
         rejected: set = set()
         detoured = False
@@ -814,6 +927,8 @@ class _DayBuilder:
                 break
             rejected.add(rest.name)
         end = start + duration
+        if latest_start is not None and start > latest_start:
+            return False  # 只有可选的小吃会传：路上耽搁后开饭太晚，不排
 
         if not self.s._departure_ok(end, place, self.is_last_day):
             if earliest < self.s.departure_min:  # 饭点本就在发车之后的，不算「省略」
@@ -863,6 +978,7 @@ class _DayBuilder:
         else:
             return False
         self.t = end
+        self.last_meal_end = end
         return True
 
     def lunch_earliest(self) -> int:
@@ -889,28 +1005,43 @@ class _DayBuilder:
         self._add_meal("午餐", "meal", ("meal",), earliest, LUNCH_DURATION, "景点周边自选简餐",
                        next_stop=next_stop, must_eat_detour_km=self._must_eat_detour())
 
-    def add_snack(self) -> None:
-        # 下午游览拖过 17:00 就不再安排小吃，避免和晚餐连着吃
-        if self.t > SNACK_LATEST_START:
+    def snack_window(self, dinner_at: int) -> Tuple[int, int]:
+        """小吃最早、最晚开始时刻：离午饭、晚饭都隔 MEAL_GAP_MIN（晚饭可顺延 SNACK_DINNER_SHIFT_MAX），
+        且不晚于 SNACK_LATEST_START。"""
+        earliest = max(SNACK_EARLIEST, (self.last_meal_end or 0) + MEAL_GAP_MIN)
+        latest = dinner_at + SNACK_DINNER_SHIFT_MAX - MEAL_GAP_MIN - SNACK_DURATION
+        return earliest, min(SNACK_LATEST_START, latest)
+
+    def add_snack(self, dinner_at: int = DINNER_DEFAULT, latest_start: Optional[int] = None) -> None:
+        """latest_start 给出时不按晚饭推算最晚时刻（晚饭前还要去看日落时，按动身时间截止）。"""
+        earliest, latest = self.snack_window(dinner_at)
+        if latest_start is not None:
+            latest = min(SNACK_LATEST_START, latest_start)
+        if max(self.t, earliest) > latest:
             return
         # 小吃可有可无，只挑顺路的（比直接去当天终点多走 ≤ ON_THE_WAY_KM）：南京实测离开景点后专程打车去吃一口，
         # 或回住处休整后又出门买小吃。点名的必吃仍按 MAX_MEAL_DIST_KM 挑
-        self._add_meal("特色小吃尝鲜", "snack", ("snack",), SNACK_EARLIEST, SNACK_DURATION, None,
-                       must_eat_detour_km=self._must_eat_detour(), max_dist_km=0.0)
+        self._add_meal("特色小吃尝鲜", "snack", ("snack",), earliest, SNACK_DURATION, None,
+                       must_eat_detour_km=self._must_eat_detour(), max_dist_km=0.0, latest_start=latest)
         if self.skipped_meals and self.skipped_meals[-1] == "特色小吃尝鲜":
             self.skipped_meals.pop()  # 小吃本就可选，赶车时省略不必提示
 
     def dinner_time(self) -> int:
-        """晚餐开始时刻：平时 18:00；返程日 18:00 吃完来不及赶车时提前，最早 DINNER_EARLIEST_RUSH。
+        """晚餐开始时刻：平时 18:00，午饭吃得晚（游大景点到下午）时往后推到离午饭 MEAL_GAP_MIN；
+        返程日 18:00 吃完来不及赶车时提前，最早 DINNER_EARLIEST_RUSH，且也要离午饭 MEAL_GAP_MIN。
         提前也放不下就仍按 18:00，由 _add_meal 判定省略。"""
+        after_lunch = (self.last_meal_end or 0) + MEAL_GAP_MIN
+        after_lunch += -after_lunch % 10
         dep = self.s.departure_point
         if not (self.is_last_day and dep and self.s.departure_min is not None):
-            return DINNER_DEFAULT
+            return max(DINNER_DEFAULT, after_lunch)
         to_station = self.s.travel.leg(self.loc, dep).minutes
         latest = (self.s.departure_min - STATION_BUFFER - LEAVE_PREP - to_station
                   - DINNER_DURATION - DINNER_RUSH_SLACK)
         latest -= latest % 10
-        if latest >= DINNER_DEFAULT or latest < max(DINNER_EARLIEST_RUSH, self.t):
+        if latest >= DINNER_DEFAULT:
+            return max(DINNER_DEFAULT, after_lunch)
+        if latest < max(DINNER_EARLIEST_RUSH, self.t, after_lunch):
             return DINNER_DEFAULT
         return latest
 

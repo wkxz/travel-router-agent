@@ -1,10 +1,10 @@
 """回归测试：按日期取营业时间（2026-10-24 武汉实测），返程日告别餐提前（同日大理实测）。"""
 
 import unittest
-from datetime import date
+from datetime import date, timedelta
 
 from app.engine import LocationPoint, Spot, Restaurant, TripScheduler
-from app.engine.geo import find_open_slot
+from app.engine.geo import find_open_slot, first_open_minute
 from app.engine.hours import CLOSED_MARK, hours_on_date
 from app.engine.models import DayItinerary, FullTripPlan, ScheduleItem
 from app.engine.validator import validate_plan
@@ -53,6 +53,50 @@ class TestHoursOnDate(unittest.TestCase):
         for text in ("08:30-17:00", "24小时营业", "周一闭馆", ""):
             self.assertEqual(hours_on_date(text, TUE), text)
         self.assertEqual(hours_on_date(WUHAN_SHOP, None), WUHAN_SHOP)
+
+    def test_single_day_listed_before_range(self):
+        # 2026-10-30 测评实测（成都宽窄巷子景区高德原文）：只有周二不开。旧版把「周一，周三」当成一组、吃掉了
+        # 「周三至周日」的开头，结果只有周日营业；模型以为是排满了，删景点重排了 6 次
+        text = "周一，周三至周日 00:00-24:00"
+        for d in range(7):
+            day = date(2026, 10, 26) + timedelta(days=d)
+            expected = CLOSED_MARK if day.weekday() == 1 else "00:00-24:00"
+            self.assertEqual(hours_on_date(text, day), expected, day)
+
+    def test_real_texts_from_eval(self):
+        # 只写「营业」不带时刻：开门，时刻未知
+        self.assertNotEqual(hours_on_date("周一至周五 11:00-14:30；16:30-21:30,周六至周日 营业", SAT), CLOSED_MARK)
+        # 节假日的特殊安排不当成平日营业时间
+        holiday = "周二-周日, 09:00-17:30；周一, 全天不开放；法定节假日（含周一）, 09:00-17:30"
+        self.assertEqual(hours_on_date(holiday, date(2026, 10, 26)), CLOSED_MARK)
+        # 跨零点写成「次日」
+        self.assertIs(find_open_slot(23 * 60, 60, hours_on_date("周一至周日 07:00-次日00:30", TUE))[0], True)
+
+    def test_date_range_with_hyphen(self):
+        """「10月1日-10月6日」用短横线连接。2026-10-30 测评：长隆 10 月 7 日后 9:30 开门，旧版按 8:30 排进行程。"""
+        text = ("10月1日-10月6日:8:30-19:00；10月7日-10月31日:9:30-18:00注:营业时间与设施运营计划如有调整，"
+                "请以官网/现场公示为准")
+        self.assertEqual(first_open_minute(hours_on_date(text, date(2026, 10, 3))), 8 * 60 + 30)
+        self.assertEqual(first_open_minute(hours_on_date(text, date(2026, 10, 30))), 9 * 60 + 30)
+
+    def test_date_range_after_hours_in_brackets(self):
+        """时刻在前、日期段在后的括号里（钟山风景区）：12 月 7:00 开门，旧版整年按 06:30 算。"""
+        text = "06:30-18:30（2月1日-11月30日），7:00-17:30（12月1日-1月31日）(数据来源:江苏省文旅厅公共服务平台苏心游)"
+        self.assertEqual(first_open_minute(hours_on_date(text, date(2026, 11, 25))), 6 * 60 + 30)
+        self.assertEqual(first_open_minute(hours_on_date(text, date(2026, 12, 10))), 7 * 60)
+        self.assertEqual(first_open_minute(hours_on_date(text, date(2027, 1, 20))), 7 * 60)
+
+    def test_next_year_and_joined_ranges(self):
+        """高德原文：「次年」跨年、多个日期段用「与」共用一段时刻。"""
+        text = "每年3月15日—11月15日08:00-20:30,11月16日—次年3月14日08:00-17:30"
+        self.assertEqual(hours_on_date(text, date(2026, 1, 15)), "08:00-17:30")
+        self.assertEqual(hours_on_date(text, date(2026, 6, 1)), "08:00-20:30,")
+        text = ("4月1日-7月26日与7月28日-10月31日 周二至周日 08:30-17:00开放 最晚进入16:10；"
+                "1月1日-3月31日与11月1日-12月31日 周二至周日 08:30-16:30开放 最晚进入15:40；周一 全天不开放")
+        self.assertEqual(first_open_minute(hours_on_date(text, date(2026, 1, 15))), 8 * 60 + 30)  # 周四
+        self.assertIn("16:30", hours_on_date(text, date(2026, 1, 15)))
+        self.assertIn("17:00", hours_on_date(text, date(2026, 5, 7)))
+        self.assertEqual(hours_on_date(text, date(2026, 5, 4)), CLOSED_MARK)  # 周一
 
     def test_closed_mark_is_not_open(self):
         self.assertIs(find_open_slot(10 * 60, 60, CLOSED_MARK)[0], False)

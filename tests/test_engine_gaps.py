@@ -62,9 +62,10 @@ class TestGapFilling(unittest.TestCase):
         self.assertTrue(_items(plan, "free"))
 
     def test_fill_respects_daily_cap(self):
-        main = [Spot(name=f"景点{i}", lng=104.080 + 0.003 * i, lat=30.656, duration_minutes=45) for i in range(3)]
+        # 每个点 90 分钟、各算 1 个名额：短景点空档补点按时长折算，见 test_cap_by_duration
+        main = [Spot(name=f"景点{i}", lng=104.080 + 0.003 * i, lat=30.656, duration_minutes=90) for i in range(3)]
         plan = TripScheduler("成都", 1, CHUNXI, pace="balanced").schedule(
-            main, [], backup_spots=[Spot(name="备选", lng=104.085, lat=30.657, duration_minutes=45)])
+            main, [], backup_spots=[Spot(name="备选", lng=104.085, lat=30.657, duration_minutes=90)])
         self.assertLessEqual(plan.days[0].total_spots, 3)
 
     def test_unused_backups_not_reported_as_unassigned(self):
@@ -85,24 +86,26 @@ class TestRealRunRegressions(unittest.TestCase):
     """哈尔滨 / 厦门实测中发现的问题（只用通用规则，不涉及城市专属逻辑）。"""
 
     def test_evening_spot_counts_toward_cap_when_filling(self):
+        # 每个点 90 分钟、各算 1 个名额：短景点空档补点按时长折算，见 test_cap_by_duration
         # 均衡档白天 ≤3、夜游另加 1 个（2026-10-29 起夜游不占白天名额，见 test_day_cohesion）：
         # 白天 3 个 + 夜游 1 个时，不应再用空档补第 5 个
-        spots = [Spot(name="白天A", lng=104.080, lat=30.656, duration_minutes=60),
-                 Spot(name="白天B", lng=104.083, lat=30.656, duration_minutes=60),
-                 Spot(name="白天E", lng=104.081, lat=30.655, duration_minutes=60),
-                 Spot(name="夜游C", lng=104.085, lat=30.657, duration_minutes=60, best_period="evening")]
+        spots = [Spot(name="白天A", lng=104.080, lat=30.656, duration_minutes=90),
+                 Spot(name="白天B", lng=104.083, lat=30.656, duration_minutes=90),
+                 Spot(name="白天E", lng=104.081, lat=30.655, duration_minutes=90),
+                 Spot(name="夜游C", lng=104.085, lat=30.657, duration_minutes=90, best_period="evening")]
         plan = TripScheduler("任意城市", 1, CHUNXI).schedule(
-            spots, [], backup_spots=[Spot(name="备选D", lng=104.082, lat=30.657, duration_minutes=60)])
+            spots, [], backup_spots=[Spot(name="备选D", lng=104.082, lat=30.657, duration_minutes=90)])
         self.assertLessEqual(plan.days[0].total_spots, 4, [it.title for it in _items(plan, "spot")])
 
     def test_two_evening_spots_take_one_daytime_slot(self):
+        # 每个点 90 分钟、各算 1 个名额：短景点空档补点按时长折算，见 test_cap_by_duration
         # 夜游只有 1 个额外名额：白天 2 个 + 夜游 2 个已满 4 个，不再补白天景点
-        spots = [Spot(name="白天A", lng=104.080, lat=30.656, duration_minutes=60),
-                 Spot(name="白天B", lng=104.083, lat=30.656, duration_minutes=60),
-                 Spot(name="夜游C", lng=104.085, lat=30.657, duration_minutes=60, best_period="evening"),
-                 Spot(name="夜游F", lng=104.086, lat=30.657, duration_minutes=60, best_period="evening")]
+        spots = [Spot(name="白天A", lng=104.080, lat=30.656, duration_minutes=90),
+                 Spot(name="白天B", lng=104.083, lat=30.656, duration_minutes=90),
+                 Spot(name="夜游C", lng=104.085, lat=30.657, duration_minutes=90, best_period="evening"),
+                 Spot(name="夜游F", lng=104.086, lat=30.657, duration_minutes=90, best_period="evening")]
         plan = TripScheduler("任意城市", 1, CHUNXI).schedule(
-            spots, [], backup_spots=[Spot(name="备选D", lng=104.082, lat=30.657, duration_minutes=60)])
+            spots, [], backup_spots=[Spot(name="备选D", lng=104.082, lat=30.657, duration_minutes=90)])
         self.assertNotIn("游览【备选D】", [it.title for it in _items(plan, "spot")])
 
     def test_gap_between_lunch_and_snack_is_visible(self):
@@ -174,6 +177,43 @@ class TestGapOnDepartureDay(unittest.TestCase):
         free = _items(plan, "free")
         self.assertTrue(any("车站" in f.description or "提前" in f.description for f in free),
                         [f.description for f in free])
+
+
+class TestOpeningHoursDriven(unittest.TestCase):
+    """2026-10-30 随机压力测试发现：没标时段的 18:00 才开的景点按白天排必然放不下，被舍弃，晚上却整段空着；
+    舍弃原因还写成「景点数已排满」。"""
+
+    def test_late_opening_spot_goes_to_evening(self):
+        spots = [Spot(name="白天景点", lng=104.080, lat=30.656, duration_minutes=120),
+                 Spot(name="夜市街区", lng=104.083, lat=30.657, duration_minutes=90, open_time="18:00-23:00")]
+        plan = TripScheduler("任意城市", 1, CHUNXI, start_date="2026-11-24").schedule(spots, [])
+        self.assertEqual(plan.unassigned_spots, [])
+        night = next(it for it in _items(plan, "spot") if "夜市街区" in it.title)
+        self.assertGreaterEqual(_minutes(night.time_slot), 18 * 60)
+
+    def test_hours_conflict_reason_is_specific(self):
+        spots = [Spot(name="短开放", lng=104.080, lat=30.656, duration_minutes=240, open_time="10:00-12:00")]
+        plan = TripScheduler("任意城市", 1, CHUNXI, start_date="2026-11-24").schedule(spots, [])
+        self.assertTrue(any("营业时间" in u for u in plan.unassigned_spots), plan.unassigned_spots)
+
+
+    def test_long_morning_spot_warns_about_lunch(self):
+        spots = [Spot(name="大景区", lng=104.080, lat=30.656, duration_minutes=300, open_time="08:30-17:30")]
+        plan = TripScheduler("任意城市", 1, CHUNXI, start_date="2026-11-24").schedule(spots, [])
+        item = _items(plan, "spot")[0]
+        self.assertTrue(any("午饭" in w for w in item.warnings), item.warnings)
+
+
+class TestLimitedMobility(unittest.TestCase):
+    def test_walk_limit_and_pace(self):
+        # 两点道路距离约 1.5km：平常步行，行动不便时打车；紧凑节奏降为均衡
+        a = Spot(name="甲", lng=104.080, lat=30.656, duration_minutes=60)
+        b = Spot(name="乙", lng=104.0915, lat=30.656, duration_minutes=60)
+        normal = TripScheduler("任意城市", 1, CHUNXI, start_date="2026-11-24", pace="compact")
+        limited = TripScheduler("任意城市", 1, CHUNXI, start_date="2026-11-24", pace="compact", mobility="limited")
+        self.assertIn("步行", normal.travel.leg(a, b).desc)
+        self.assertIn("打车", limited.travel.leg(a, b).desc)
+        self.assertEqual((normal.pace, limited.pace), ("compact", "balanced"))
 
 
 if __name__ == "__main__":

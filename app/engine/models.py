@@ -4,6 +4,7 @@
 """
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import List, Optional, Dict, Any
 
 
@@ -35,12 +36,22 @@ class Spot(LocationPoint):
     cost: Optional[float] = None  # 门票参考；None = 无数据（≠ 免费）
     is_indoor: bool = False  # 是否为室内场馆（博物馆、科技馆等）
     best_period: str = ""  # 最佳游览时段："" 不限 | "morning" 宜早去 | "evening" 宜傍晚/夜间
+    # 看日落的景点（广州塔、外滩等，模型给 best_period="sunset"）：best_period 记为 "evening"，分天与夜游同等对待，
+    # 当天排在晚饭前、盖住日落前后，晚饭顺延到游完之后
+    sunset: bool = False
     must_visit: bool = False  # 用户点名要去的：放不下时最后才舍弃（模型补充的景点不标）
     # 同品牌的其他分店（用户只说了「先锋书店」、没指定哪家时）：分天时按当天路线换成最顺路且走得通的一家。
     # 各分店本身的 branches 为空，branch_of 记原来那家的名称，用于在行程里说明换了店
     branches: List["Spot"] = field(default_factory=list)
     branch_of: str = ""
     tips: str = ""  # 模型基于常识给的游览建议（预约、门票、最佳时段等），只作附注展示，未经数据核实
+    # 用户指定放第几天（1 起，0 = 不限）。排程开始时换算成 fixed_date，其他日子按「去不了」处理
+    day: int = 0
+    fixed_date: Optional[date] = None
+    # 单向参观的景区（故宫午门进、神武门出）：只能从 entry_points 进、从 exit_points 出；为空时进出都按 gates。
+    # 出口只出不进，不能当普通门区加进 gates，否则可能排成「先上景山、再从神武门进故宫」
+    entry_points: List[LocationPoint] = field(default_factory=list)
+    exit_points: List[LocationPoint] = field(default_factory=list)
 
 
 @dataclass

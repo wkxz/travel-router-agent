@@ -23,6 +23,7 @@ from openai.types.responses import ResponseTextDeltaEvent
 from agents import Agent, MaxTurnsExceeded, OpenAIChatCompletionsModel, Runner, set_tracing_disabled
 
 from ._logger import create_logger
+from ._data.amap import redact_secrets
 from ._data.poi_repo import PoiRepo, TripContext
 from ._tools import (
     extract_plan,
@@ -105,7 +106,8 @@ AGENT_INSTRUCTIONS = f"""你是一位严谨的旅游路线规划与美食向导�
 1. 天气参与决策：先查天气。低温大风时少排长时间露天骑行、游船等暴露项目；雨雪天对登山步道、石板路等湿滑路段给出防滑提醒，并考虑室内替代；
    高温时把户外项目安排在早晚，正午留给室内场馆。
 2. 体力与节奏：大型博物馆、山岳、主题乐园等体量大的景点通常需要 3 小时以上，duration_minutes 要如实设置；同一天出现两个同类型的大型景点时，提示用户可二选一。
-3. 时段偏好：根据景点性质判断 best_period——需要早去的（如动物园、早市、观日出、热门景区避开人流）标 "morning"，看夜景、逛夜市的标 "evening"，不确定就不标。
+3. 时段偏好：根据景点性质判断 best_period——需要早去的（如动物园、早市、观日出、热门景区避开人流）标 "morning"，看夜景、逛夜市的标 "evening"，
+   以看日落为主要看点的（观景塔、江边、海边、山顶观景台，如广州塔、外滩）标 "sunset"（排在日落前后、晚饭顺延），不确定就不标。
 4. 现实条件：演出、灯光秀、季节性景观（花期、红叶、冰雪）等有时间或季节限制的，提醒用户核实；需要实名预约的场馆提醒提前预约。
 5. 措辞客观平实，不用营销号式的夸张表达。
 
@@ -129,6 +131,12 @@ AGENT_INSTRUCTIONS = f"""你是一位严谨的旅游路线规划与美食向导�
    - 用户点名要去的景点写成 {{"id": "...", "must": true}}，景点放不下时算法会先舍弃没标 must 的。
    - 用户只说了连锁品牌、没指定分店（如「先锋书店」）时，任选一家的 id 并加 "any_branch": true，
      算法会查出同城其他分店、按当天路线换成最顺路的一家；用户点名了具体分店就不加。
+   - 用户指定了某个景点哪天去（「第二天去长隆」「把第二天的陈家祠换成长隆」「最后一天去夫子庙」）时，
+     给它加 "day": 天数（从 1 起）；换景点时新景点继承被换掉那个的天数。没指定的不要加，交给算法按路线分天
+     （实测用户说「第二天把陈家祠换成长隆」，没有这个参数时长隆被排到第 1 天，回复还说「已替换」）。
+   - 单向参观、入口出口不在一处的景区（如故宫午门进、神武门出），用 search_scenic_spots 搜出入口门、出口门的 POI
+     （如「故宫博物院-午门」「故宫博物院-神武门」），给该景点加 "entry_id" / "exit_id"；算法按出口算去下一站的路，
+     出口旁的景点（景山公园）才会排在同一天。不确定哪个门进出就不加。
    - 给每个景点写 "tips"：一两句你知道的实用经验，如是否要提前预约及在哪预约、门票大致价格、从哪个地铁站或哪个门进、
      最佳游览时段与看点（≤60 字）。它会原样显示在行程卡片对应景点下、标明「未经核实」；不确定的不要写，
      不要写营业时间和闭馆日（以检索数据为准，写了容易与行程表矛盾）。
@@ -139,6 +147,9 @@ AGENT_INSTRUCTIONS = f"""你是一位严谨的旅游路线规划与美食向导�
    - must_eat 只填用户原话里点名的菜（逗号分隔），不要自己补充「当地必吃」；用户没点名就留空。
      算法会优先安排且全程只排一次，你不需要再处理去重。
    - 忌口与预算交给参数，不要靠删减 foods 来凑：用户说的忌口填 avoid，人均预算填 max_cost_per_meal。
+   - 一次回复里 generate_trip_itinerary 最多调用 2 次（含按 gaps 补检索后的那次），第 3 次会被系统拒绝。用户点名的景点进了「未安排」时，
+     把原因如实告诉用户、给出可选的调整（加一天、换节奏、二选一），由用户决定，不要自行删减其他景点反复重排
+     （实测为放下一个景点连删带换重排了 6 次，耗时 3 分钟）。
    - 工具返回 gaps 非空时，严格按 next_step 并行补检索，然后只重新调用一次 generate_trip_itinerary；
      之后仍有「周边自选」或没排上的必吃，就接受并在回复里如实说明原因，不要再重排、也不要在文字里自行补一家店。
      gaps 为空时不要重排：行程已通过可行性校验，你觉得某天偏满、某个景点要玩很久，就在回复里提出建议，
@@ -146,8 +157,12 @@ AGENT_INSTRUCTIONS = f"""你是一位严谨的旅游路线规划与美食向导�
    - 有出行日期就传 start_date（用于闭馆校验），日期一律按上方【当前日期】推算；用户没说出行日期时不传，
      算法按今天起算，并在回复中说明「按今天出发排的，闭馆日按此核对」。
    - 有返程信息就传 departure_id、departure_time；用户说了节奏就传 pace。
+   - 用户提到同行有老人、小孩、孕妇，或腿脚不便、推婴儿车、坐轮椅，传 mobility="limited"（算法把步行上限降到 1 公里、
+     节奏最多到均衡），用户没指定节奏时 pace 用 relaxed；tips 里写上台阶多少、有无电梯或观光车、能否推车入内。
+     这个设置在本会话后续轮次会自动沿用，用户说「不用照顾了」再传 mobility="normal"。
    - 用户没说住宿位置时，hotel_id 留空，并在回复中请用户补充。
-   - 另通过 backup_spots 提供 2~4 个各片区附近的轻量备选景点 id（公园、街区、小型展馆等），算法只在出现 1 小时以上空档且顺路时才加入。
+   - 另通过 backup_spots 提供轻量备选景点 id（公园、街区、小型展馆等）：每天的游览片区各 1~2 个、总数不少于天数，
+     算法只在出现 1 小时以上空档、且离当时所在位置 3 公里内时才加入（实测只给 1 个备选时，下午整段空着补不上）。
    - 觉得行程需要调整时，修改参数后重新调用 generate_trip_itinerary，而不是在文字里另写一套时间或顺序。
    - 用户要求修改（如「把 A 换成 B」）时，只改用户要求的部分，其余景点、日期、偏好保持不变；
      如果为了放下新景点不得不删掉其他景点，必须在回复里明确告诉用户删了哪些、为什么。
@@ -156,6 +171,7 @@ AGENT_INSTRUCTIONS = f"""你是一位严谨的旅游路线规划与美食向导�
    - 行程表由系统直接展示在你的回复上方。不要复述、改写或重新排版行程表：不要按天（Day 1 / 第一天……）
      逐日概括，也不要另列时间安排。逐日复述时容易写出行程表里没有的活动（实测写了「傍晚漫步某街区」，
      行程表那个时段其实是去别处吃晚饭），和行程表矛盾。
+   - 用户指定了天数的景点，回复里说明实际排在第几天；没能排在指定那天（进了未安排）的，如实说明原因。
    - 你的回复只写：一两句全程的整体概括（不分天）；「未安排的地点」及原因（原样告知，不要自行补进行程）；
      行程表里标注「以地图导航为准」的路段（可能隔水需轮渡、或需绕行），提醒用户实际的交通方式；
      天气与穿衣、预约与门票、安全与注意事项。这些提示不得与行程表的时间、顺序、餐厅矛盾。
@@ -256,7 +272,7 @@ async def _event_stream(
 
                 elif event.name == "tool_output":
                     # 行程数据绕过模型直接推给前端渲染，模型无从改写
-                    plan = extract_plan(getattr(event.item, "output", None))
+                    plan = extract_plan(getattr(event.item, "output", None), context)
                     if plan:
                         produced = True
                         logger.log(f"[stream] plan: {plan.get('city')} {plan.get('total_days')}d")
@@ -312,7 +328,7 @@ async def chat_events(
             "detail": str(e),
         })
     except Exception as e:
-        logger.error(f"[stream] error: {type(e).__name__}: {e}")
+        logger.error(redact_secrets(f"[stream] error: {type(e).__name__}: {e}"))
         detail: Any = str(e)
         status: Any = None
         response = getattr(e, "response", None)
@@ -332,8 +348,16 @@ async def chat_events(
         body_attr = getattr(e, "body", None)
         if body_attr and detail == str(e):
             detail = body_attr
+        # 上游报错的原文可能回显请求内容（含密钥），推给浏览器前与工具层一样先脱敏
+        if not isinstance(detail, str):
+            try:
+                detail = json.loads(redact_secrets(json.dumps(detail, ensure_ascii=False)))
+            except (TypeError, ValueError):
+                detail = redact_secrets(str(detail))
+        else:
+            detail = redact_secrets(detail)
         yield sse_event("error", {
-            "message": str(e),
+            "message": redact_secrets(str(e)),
             "errorType": type(e).__name__,
             "status": status,
             "detail": detail,

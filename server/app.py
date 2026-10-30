@@ -169,7 +169,8 @@ async def frontend(request: Request):
     if not os.path.isdir(DIST_DIR):
         return PlainTextResponse("前端尚未构建：先运行 npm run build（开发时可用 npx vite 单独启动前端）。", status_code=404)
     path = os.path.normpath(os.path.join(DIST_DIR, request.path_params.get("path", "")))
-    if path.startswith(DIST_DIR) and os.path.isfile(path):
+    # 不能用 startswith：同级的 dist-old/ 也以 dist 开头
+    if os.path.commonpath([path, os.path.normpath(DIST_DIR)]) == os.path.normpath(DIST_DIR) and os.path.isfile(path):
         return FileResponse(path)
     return FileResponse(os.path.join(DIST_DIR, "index.html"))
 

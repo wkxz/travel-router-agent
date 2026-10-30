@@ -47,6 +47,31 @@ const LAMP_I18N_KEYS: Record<string, string> = {
 const CONVERSATION_ID_STORAGE_KEY = 'eo_conversation_id';
 
 /**
+ * localStorage wrappers: private windows and blocked site data make localStorage throw,
+ * which used to break the page on load. Falls back to memory for the current page.
+ */
+const memoryStore = new Map<string, string>();
+
+function storageGet(key: string): string | null {
+  try {
+    const value = localStorage.getItem(key);
+    if (value !== null) return value;
+  } catch {
+    /* storage unavailable */
+  }
+  return memoryStore.get(key) ?? null;
+}
+
+function storageSet(key: string, value: string): void {
+  memoryStore.set(key, value);
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/**
  * Stable per-browser identifier, generated on first visit and kept in localStorage.
  * Sent as `userId` so the conversation list only shows this browser's conversations.
  * (The storage key keeps its historical name so existing browsers keep their history.)
@@ -56,7 +81,7 @@ const CONVERSATIONS_PAGE_SIZE = 20;
 
 /** Returns existing conversation ID from localStorage, or null if first visit */
 function getExistingConversationId(): string | null {
-  return localStorage.getItem(CONVERSATION_ID_STORAGE_KEY);
+  return storageGet(CONVERSATION_ID_STORAGE_KEY);
 }
 
 /** Returns existing or creates a new conversation ID */
@@ -65,15 +90,15 @@ function getOrCreateConversationId(): string {
   if (cached) return cached;
 
   const conversationId = crypto.randomUUID();
-  localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, conversationId);
+  storageSet(CONVERSATION_ID_STORAGE_KEY, conversationId);
   return conversationId;
 }
 
 function getOrCreateEoUuid(): string {
-  const cached = localStorage.getItem(EO_USER_ID_STORAGE_KEY);
+  const cached = storageGet(EO_USER_ID_STORAGE_KEY);
   if (cached) return cached;
   const eoUuid = crypto.randomUUID();
-  localStorage.setItem(EO_USER_ID_STORAGE_KEY, eoUuid);
+  storageSet(EO_USER_ID_STORAGE_KEY, eoUuid);
   return eoUuid;
 }
 
@@ -460,7 +485,7 @@ function AppInner() {
     deleteSnapshot(oldConvId).catch(() => {});
 
     const newId = crypto.randomUUID();
-    localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, newId);
+    storageSet(CONVERSATION_ID_STORAGE_KEY, newId);
     conversationIdRef.current = newId;
     setActiveConversationId(newId);
     setMessages([]);
@@ -494,7 +519,7 @@ function AppInner() {
     if (loading) return;
     if (id === conversationIdRef.current) return;
 
-    localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, id);
+    storageSet(CONVERSATION_ID_STORAGE_KEY, id);
     conversationIdRef.current = id;
     setActiveConversationId(id);
     setRightPanelMode('code');
@@ -506,7 +531,7 @@ function AppInner() {
     if (loading) return;
 
     const newId = crypto.randomUUID();
-    localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, newId);
+    storageSet(CONVERSATION_ID_STORAGE_KEY, newId);
     conversationIdRef.current = newId;
     setActiveConversationId(newId);
     setMessages([]);
@@ -542,7 +567,7 @@ function AppInner() {
 
     if (isActive) {
       const newId = crypto.randomUUID();
-      localStorage.setItem(CONVERSATION_ID_STORAGE_KEY, newId);
+      storageSet(CONVERSATION_ID_STORAGE_KEY, newId);
       conversationIdRef.current = newId;
       setActiveConversationId(newId);
       setMessages([]);

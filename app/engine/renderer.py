@@ -12,7 +12,9 @@ PLAN_KIND = "trip_plan"  # 前端 / 历史记录据此识别工具输出里的�
 
 def trip_tips(plan: FullTripPlan) -> List[str]:
     """只给和本次行程实际相关的提示，不附带任何针对特定地区的固定文案。"""
-    tips = ["**动线说明**：本行程由空间聚类与路径优化算法（最近邻 + 2-opt）计算，每日按地理组团推进，减少折返。"]
+    # 旧文案写「空间聚类 + 最近邻 2-opt」，而 12 个点以内是精确分天、当天顺序取通勤最短（打平时取公里数少的），
+    # 只有超过 12 个点才用聚类与 2-opt；这里只描述结果，不写算法名
+    tips = ["**动线说明**：景点按片区、营业时间和通勤分天，同一片区尽量排在同一天，每天的游览顺序按通勤最短安排，减少折返。"]
 
     all_items = [it for d in plan.days for it in d.items]
     if any("需现场确认" in w for it in all_items for w in it.warnings):

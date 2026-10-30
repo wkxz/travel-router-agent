@@ -77,7 +77,7 @@ npm run build
 
 ## 5. 真实环境测评
 
-`eval/` 用 11 条真实提示词在进程内运行与线上相同的 Agent，记录工具调用、行程与回复。
+`eval/` 用 12 条真实提示词在进程内运行与线上相同的 Agent，记录工具调用、行程与回复。
 **会产生模型与高德调用费用**，结果写入 `eval/results/`（已忽略，不入库）。
 
 ```bash
@@ -90,6 +90,29 @@ npm run build
 `analyze.py` 统计：耗时、排程调用次数、最长单程、「周边自选」餐数、估算路段、绕路超 1km 的餐点、
 未安排景点与未满足必吃、回复里在工具数据中找不到的店名（疑似编造）。
 **改了排程引擎或提示词后，用它与上一轮对比再合并。**
+
+### 行程合理性：规则检查、压力测试与模型点评
+
+上面的指标只管「走不走得通」。2026-10-30 用户实测指出的折返、天黑进户外景区、一天两顿素食，一条也没查出来，
+所以另有三层检查，从便宜到贵：
+
+```bash
+./.venv/Scripts/python.exe eval/plan_checks.py eval/results              # 规则检查已有结果，不产生费用
+./.venv/Scripts/python.exe eval/stress.py 1 300                         # 随机 300 例，离线，不产生费用
+./.venv/Scripts/python.exe eval/review.py eval/results --dry-run        # 只看提示词
+./.venv/Scripts/python.exe eval/review.py eval/results 11_nanjing_3days # 模型点评，产生费用
+```
+
+- `plan_checks.py`：确定性规则，查折返进同一片区、白天户外景点日落后半小时还没结束、同一天两顿同类菜。
+  `tests/test_plan_checks.py` 用当次的旧行程验证规则能查出来、修复后的排法不误报。
+- `stress.py`：随机生成景点、餐厅（含子景点、室内场馆、同类菜系），先查走不走得通（应全为 0），
+  再跑 `plan_checks` 统计合理性问题。数字只在同一种子下可比，改引擎前后各跑一次。
+- `review.py`：把真实测评的行程整理成时间轴，连同规则已查出的问题交给模型，以游客视角找规则没覆盖到的问题，
+  结果写到 `<结果目录>/review/`。模型配置用 `REVIEW_MODEL` / `REVIEW_BASE_URL` / `REVIEW_API_KEY`
+  （可指向 Gemini 等与主 Agent 不同的模型），未设置时沿用 `LLM_*`。
+
+模型点评用来**发现新的问题类型**，不当回归测试：意见不稳定、可能看错，每条都回到数据核实；
+确认是真问题的，写进 `plan_checks.py` 并加单元测试，以后由规则自动检查。
 
 ## 6. 开发约定
 

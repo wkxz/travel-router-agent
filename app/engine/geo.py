@@ -6,10 +6,11 @@
 from __future__ import annotations
 import math
 import re
+from datetime import date
 from functools import lru_cache
 from typing import Tuple, Optional, Any
 
-from .hours import CLOSED_MARK
+from .hours import CLOSED_MARK, _ALL_DAY_RE
 
 
 def haversine_distance(lng1: float, lat1: float, lng2: float, lat2: float) -> float:
@@ -34,9 +35,29 @@ def access_points(p: Any) -> list:
     return getattr(p, "gates", None) or [p]
 
 
+def entry_points(p: Any) -> list:
+    """能进入的位置：单向参观的景区只有入口（Spot.entry_points），否则同 access_points。"""
+    return getattr(p, "entry_points", None) or access_points(p)
+
+
+def exit_points(p: Any) -> list:
+    """能离开的位置：单向参观的景区只有出口（Spot.exit_points），否则同 access_points。"""
+    return getattr(p, "exit_points", None) or access_points(p)
+
+
+def all_points(p: Any) -> list:
+    """进、出会用到的全部位置（取路网时都要带上）。"""
+    entries, exits = getattr(p, "entry_points", None), getattr(p, "exit_points", None)
+    if not entries and not exits:
+        return access_points(p)  # 绝大多数景点：分天穷举时每种组合都要判断子景点，这里在热路径上
+    pts = {id(x): x for x in (*access_points(p), *(entries or []), *(exits or []))}
+    return list(pts.values())
+
+
 def gate_pair(a: Any, b: Any) -> Tuple[Any, Any]:
-    """a → b 距离最近的一对进出位置：从 a 的哪个门出、进 b 的哪个门。都没有出入口时即 (a, b)。"""
-    ga, gb = access_points(a), access_points(b)
+    """a → b 距离最近的一对进出位置：从 a 的哪个门出、进 b 的哪个门。都没有出入口时即 (a, b)。
+    有方向：单向参观的景区离开时只看出口、到达时只看入口。"""
+    ga, gb = exit_points(a), entry_points(b)
     if len(ga) == 1 and len(gb) == 1:
         return ga[0], gb[0]
     return min(((x, y) for x in ga for y in gb),
@@ -44,17 +65,36 @@ def gate_pair(a: Any, b: Any) -> Tuple[Any, Any]:
 
 
 def place_distance(a: Any, b: Any) -> float:
-    """两地之间的直线距离（km），大型景区按最近的出入口算。排程里地点之间的距离都用它。"""
+    """从 a 到 b 的直线距离（km），大型景区按最近的出入口算、单向景区分进出。排程里地点之间的距离都用它。"""
     x, y = gate_pair(a, b)
     return haversine_distance(x.lng, x.lat, y.lng, y.lat)
+
+
+def area_distance(a: Any, b: Any) -> float:
+    """判断是否同一片区用的距离：不分方向，取两个方向里近的（故宫神武门出正对景山南门，反过来要绕到午门）。"""
+    return min(place_distance(a, b), place_distance(b, a))
 
 
 SAME_AREA_KM = 4.0  # 簇重心相距 4km 以内视为同一片区，优先排在同一天
 WALKING_MAX_ROAD_KM = 2.0  # 道路距离 2km 以内按步行（约 25 分钟），超过才建议打车
 
 
+def sunset_minutes(lat: float, lng: float, day: date, utc_offset_hours: int = 8) -> int:
+    """当地日落时刻（从 00:00 起的分钟数，按北京时间）。NOAA 简化公式，误差在几分钟内，不需要联网。"""
+    gamma = 2 * math.pi / 365 * (day.timetuple().tm_yday - 1)
+    eqtime = 229.18 * (0.000075 + 0.001868 * math.cos(gamma) - 0.032077 * math.sin(gamma)
+                       - 0.014615 * math.cos(2 * gamma) - 0.040849 * math.sin(2 * gamma))
+    decl = (0.006918 - 0.399912 * math.cos(gamma) + 0.070257 * math.sin(gamma)
+            - 0.006758 * math.cos(2 * gamma) + 0.000907 * math.sin(2 * gamma)
+            - 0.002697 * math.cos(3 * gamma) + 0.00148 * math.sin(3 * gamma))
+    phi = math.radians(lat)
+    cos_ha = math.cos(math.radians(90.833)) / (math.cos(phi) * math.cos(decl)) - math.tan(phi) * math.tan(decl)
+    ha = math.degrees(math.acos(max(-1.0, min(1.0, cos_ha))))  # 极昼极夜时截到 ±1
+    return int(round(720 - 4 * (lng - ha) - eqtime + utc_offset_hours * 60))
+
+
 def estimate_transit(
-    dist_km: float, mode: str = "auto"
+    dist_km: float, mode: str = "auto", walk_max_km: float = WALKING_MAX_ROAD_KM
 ) -> Tuple[int, str]:
     """根据直线距离估算通行方式、通行耗时（分钟）和描述文本。
 
@@ -63,7 +103,7 @@ def estimate_transit(
     """
     road_km = dist_km * 1.3  # 折线估算系数
 
-    if mode == "walking" or (mode == "auto" and road_km <= WALKING_MAX_ROAD_KM):
+    if mode == "walking" or (mode == "auto" and road_km <= walk_max_km):
         # 步行模式（约 4.5 km/h = 13.3 分钟/km）
         minutes = max(5, int(math.ceil(road_km * 13.3)))
         return minutes, f"步行约 {minutes} 分钟 ({road_km:.1f} km)"
@@ -138,7 +178,7 @@ _ALL_DAY_MARKERS = ("24小时", "全天", "00:00-24:00", "00:00-23:59")
 def _open_intervals(open_time_str: str) -> tuple:
     """把营业时间字符串解析成 ((开始分钟, 结束分钟), ...)，跨零点的结束时间 +1440。"""
     result = []
-    for start_s, end_s in re.findall(r"(\d{1,2}:\d{2})\s*[-–~]\s*(\d{1,2}:\d{2})", open_time_str):
+    for start_s, end_s in re.findall(r"(\d{1,2}:\d{2})\s*[-–~]\s*(?:次日)?(\d{1,2}:\d{2})", open_time_str):  # 「07:00-次日00:30」
         start_m, end_m = parse_time_to_minutes(start_s), parse_time_to_minutes(end_s)
         if start_m is None or end_m is None:
             continue
@@ -171,7 +211,7 @@ def find_open_slot(
         return None, earliest_start, "营业时间暂无数据，需现场确认"
     if text == CLOSED_MARK:
         return False, earliest_start, CLOSED_MARK
-    if any(m in text for m in _ALL_DAY_MARKERS):
+    if _ALL_DAY_RE.search(text) or any(m in text for m in _ALL_DAY_MARKERS[2:]):  # 「全天不开放」不算全天营业
         return True, earliest_start, "全天开放"
     intervals = _open_intervals(text)
     if not intervals:

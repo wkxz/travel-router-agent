@@ -56,6 +56,18 @@ class TestDietAndBudgetFilter(unittest.TestCase):
         self.assertIn("钟水饺(总店)", names)
         self.assertTrue(any("忌口" in n and "排除了 2 家" in n for n in out.notes), out.notes)
 
+    def test_no_spicy_expands_to_common_dishes(self):
+        """2026-10-30 第 4 轮测评（成都 不吃辣）：模型传了「辣,麻辣,火锅,串串,冒菜,...」，
+        仍漏过张老二凉粉、冒烤鸭。忌口含「辣」时按常见辣味菜名补全。"""
+        repo = _repo_with(_rec("G", "张老二凉粉", "餐饮服务;快餐厅;快餐厅", 15, "美食"),
+                          _rec("H", "贺记冒烤鸭(总店)", "餐饮服务;中餐厅;中餐厅", 40, "美食"),
+                          _rec("I", "龙抄手(春熙路店)", "餐饮服务;中餐厅;中餐厅", 30, "美食"))
+        out = build_trip_inputs(repo, "[]", '["G", "H", "I"]', avoid="辣,麻辣,火锅,串串,冒菜")
+        self.assertEqual([r.name for r in out.restaurants], ["龙抄手(春熙路店)"])
+        self.assertTrue(any("凉粉" in n and "冒烤鸭" in n for n in out.notes), out.notes)
+        # 没说不吃辣时不扩展
+        self.assertEqual(len(build_trip_inputs(repo, "[]", '["G", "H", "I"]', avoid="香菜").restaurants), 3)
+
     def test_budget_filters_and_reports_unknown(self):
         out = build_trip_inputs(self.repo, "[]", self.foods, max_cost_per_meal=80)
         names = [r.name for r in out.restaurants]
