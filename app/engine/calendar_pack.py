@@ -7,7 +7,7 @@ from .models import LocationPoint, Spot
 from .optimizer import optimize_spots_route
 from .geo import (all_points, area_distance, cluster_spots_spatially, entry_points, estimate_transit, exit_points,
                   haversine_distance, place_distance)
-from .timeline import day_is_feasible
+from .timeline import day_is_feasible, simulate_day
 from .hours import (_WEEKDAY_CHARS, _D, _WD, _RANGE, _WEEKDAY_SPEC_RE, CLOSED_MARK, _resolve, _spec_days, _weekday_part, strip_holiday_notes,  # 星期正则共用
                     day_span as _day_span, hours_on_date)
 
@@ -131,6 +131,10 @@ _PERIOD_RANK = {"morning": 0, "evening": 2}
 # 分钟数会把「多打两段车」和「走两段路」算成差不多。南京实测第 3 天「老门东 → 总统府 → 夫子庙」71 分钟 14.5km，
 # 「总统府 → 老门东 → 夫子庙」72 分钟 9.4km，旧版选了前者，来回坐车
 ROUTE_TIE_MIN = 5
+# 每个游到「日落 + timeline.DARK_GRACE_MIN」之后的户外景点计这么多分钟通勤（timeline.simulate_day 数个数）。
+# 2026-10-30 模拟实验 300 例 11 月出行：38 处主景点天黑后还在户外，旧版挑顺序只看通勤。
+# 按个数而不按天黑分钟数：按分钟数时为了把天黑缩短一点也会绕路，随机 300 例新增的 5 天回头路里 4 天仍然天黑
+DARK_SPOT_PENALTY = 40
 
 
 # 子景点：名称里含另一个所选景点的名称（去掉「景区」等后缀），且相距不超过 SUB_SPOT_MAX_KM。
@@ -214,27 +218,37 @@ def _route_with_night(hotel: LocationPoint, spots: List[Spot], night: set,
         routes = adjacent or routes
     routes.sort(key=lambda r: r[0])
 
-    def timely(perm: List[Spot]) -> bool:
+    def simulate(perm: List[Spot]) -> Tuple[bool, int]:
         daytime = [s for s in perm if id(s) not in night]
-        return day_is_feasible(hotel, daytime, [s for s in perm if id(s) in night],
-                               lambda a, b: leg(a, b) * FEASIBILITY_TRAVEL_FACTOR, day)
+        return simulate_day(hotel, daytime, [s for s in perm if id(s) in night],
+                            lambda a, b: leg(a, b) * FEASIBILITY_TRAVEL_FACTOR, day)
 
     def km(perm: List[Spot]) -> float:
         pts = [hotel, *perm, hotel]
         return sum(place_distance(a, b) for a, b in zip(pts, pts[1:]))
 
-    first = next((i for i, (_, perm) in enumerate(routes) if timely(perm)), None)
+    # 代价 = 通勤分钟 + 天黑后还在户外的景点数 × DARK_SPOT_PENALTY。routes 按通勤升序，
+    # 通勤已超过「当前最优代价 + ROUTE_TIE_MIN」的不可能再胜出，到此为止
+    first = next((i for i, (_, perm) in enumerate(routes) if simulate(perm)[0]), None)
     if first is None:
         return routes[0][1], routes[0][0], False
-    shortest = routes[first][0]
     best_cost, best = routes[first]
+    shortest = best_cost + DARK_SPOT_PENALTY * simulate(best)[1]  # 比较基准：随更优的顺序下降
     best_km = km(best)
     for cost, perm in routes[first + 1:]:
         if cost > shortest + ROUTE_TIE_MIN:
             break
-        k = km(perm)
-        if k < best_km - 0.5 and timely(perm):
-            best_cost, best, best_km = cost, perm, k
+        if cost >= shortest - ROUTE_TIE_MIN:  # 与基准相差不到 ROUTE_TIE_MIN：只在少走 0.5km 以上时换（旧逻辑）
+            k = km(perm)
+            if k < best_km - 0.5:
+                ok, dark = simulate(perm)
+                if ok and cost + DARK_SPOT_PENALTY * dark <= shortest + ROUTE_TIE_MIN:
+                    best_cost, best, best_km = cost, perm, k
+            continue
+        ok, dark = simulate(perm)  # 通勤明显更短：只有当前最优在天黑后还在户外时才会走到这里
+        total = cost + DARK_SPOT_PENALTY * dark
+        if ok and total < shortest - ROUTE_TIE_MIN:
+            best_cost, best, best_km, shortest = cost, perm, km(perm), total
     return best, best_cost, True
 
 

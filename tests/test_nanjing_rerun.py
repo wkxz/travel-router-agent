@@ -107,15 +107,24 @@ class TestSubSpot(unittest.TestCase):
 
 
 class TestRouteTieByDistance(unittest.TestCase):
+    NAMES = ("先锋书店(老门东店)", "总统府", "老门东", "南京夫子庙")
+
     def test_fewer_km_when_minutes_tie(self):
-        """估算分钟数只差 1~2 分钟时按公里数选：先去总统府，再到老门东一带，傍晚就近逛夫子庙。"""
-        names = ("先锋书店(老门东店)", "总统府", "老门东", "南京夫子庙")
-        spots = [s for s in _spots() if s.name in names]
-        plan = TripScheduler("南京", 1, HOTEL, start_date="2026-11-27").schedule(spots, [])
+        """估算分钟数只差 1~2 分钟时按公里数选：先去总统府，再到老门东一带，傍晚就近逛夫子庙。
+        用夏天的日期：11 月底日落 17:01，按日照会先逛户外的老门东、再进书店（见 test_daylight_order）。"""
+        spots = [s for s in _spots() if s.name in self.NAMES]
+        plan = TripScheduler("南京", 1, HOTEL, start_date="2026-06-26").schedule(spots, [])
         order = [n for _, _, n in _rows(plan)]
         self.assertEqual(plan.unassigned_spots, [], order)
         self.assertEqual(order[0], "总统府", order)
         self.assertEqual(order[-2:], ["老门东", "南京夫子庙"], order)
+
+    def test_late_autumn_outdoor_before_bookstore(self):
+        # 原始用例日期（11 月 27 日）：旧版书店 13:02、老门东 15:07-17:07（日落 17:01）；按日照先逛老门东
+        spots = [s for s in _spots() if s.name in self.NAMES]
+        plan = TripScheduler("南京", 1, HOTEL, start_date="2026-11-27").schedule(spots, [])
+        order = [n for _, _, n in _rows(plan)]
+        self.assertEqual(order, ["总统府", "老门东", "先锋书店(老门东店)", "南京夫子庙"], order)
 
 
 class TestNoOutdoorFillerAfterSunset(unittest.TestCase):
