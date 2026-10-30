@@ -3,10 +3,13 @@
 - Key 只从环境变量 AMAP_API_KEY 读取，绝不硬编码、绝不打印；
 - 全局节流 + QPS 限流（10019~10022）退避重试；
 - 额度用完（10044 等）时熔断，熔断期内不再发请求；
+- 录制回放（AMAP_CACHE=record / replay，默认关闭）：测评与调试离线重放，不耗额度、结果可复现；
 - 失败统一返回 {"error": "..."}，让模型能如实解释原因。
 """
 
+import json
 import os
+import sqlite3
 import threading
 import time
 from typing import Any, Optional, Tuple
@@ -51,6 +54,62 @@ def redact_secrets(text: str) -> str:
     return text
 
 
+# ---------- 录制回放 ----------
+# record：照常请求，成功的返回按「接口 + 参数」存进 SQLite；replay：只读缓存、不联网，未命中直接报错。
+# 只给测评和调试用，线上默认关闭：录下来的驾车时间是录制那一刻的路况，营业时间、店铺也会变。
+DEFAULT_CACHE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                                  "data", "amap-cache.db")
+_cache_lock = threading.Lock()
+_cache_conn: Optional[sqlite3.Connection] = None
+_cache_conn_path = ""
+
+
+def cache_mode() -> str:
+    mode = (os.getenv("AMAP_CACHE") or "").strip().lower()
+    return mode if mode in ("record", "replay") else ""
+
+
+def _cache_key(path: str, params: dict) -> str:
+    return path + "?" + json.dumps(params, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _cache_db() -> sqlite3.Connection:
+    """调用方持有 _cache_lock。AMAP_CACHE_PATH 变了（测试里）就重新打开。"""
+    global _cache_conn, _cache_conn_path
+    path = os.getenv("AMAP_CACHE_PATH") or DEFAULT_CACHE_PATH
+    if _cache_conn is None or _cache_conn_path != path:
+        if _cache_conn is not None:
+            _cache_conn.close()
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        _cache_conn = sqlite3.connect(path, check_same_thread=False)
+        _cache_conn.execute("CREATE TABLE IF NOT EXISTS responses (key TEXT PRIMARY KEY, body TEXT NOT NULL, "
+                            "recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        _cache_conn_path = path
+    return _cache_conn
+
+
+def _cache_get(key: str) -> Optional[dict]:
+    with _cache_lock:
+        row = _cache_db().execute("SELECT body FROM responses WHERE key = ?", (key,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def _cache_put(key: str, data: dict) -> None:
+    with _cache_lock:
+        db = _cache_db()
+        db.execute("INSERT OR REPLACE INTO responses (key, body) VALUES (?, ?)",
+                   (key, json.dumps(data, ensure_ascii=False)))
+        db.commit()
+
+
+def close_cache() -> None:
+    global _cache_conn, _cache_conn_path
+    with _cache_lock:
+        if _cache_conn is not None:
+            _cache_conn.close()
+        _cache_conn, _cache_conn_path = None, ""
+
+
 def _throttle() -> None:
     """全局最小请求间隔，避免高德并发超限。"""
     global _last_call_at
@@ -65,6 +124,20 @@ def amap_get(path: str, params: dict, retries: int = 3) -> dict:
     """统一高德 GET 请求：注入 Key、节流、QPS 限流退避重试、status 校验。
 
     path 默认指 v3 接口（如 "/place/text"）；以 "/v5/" 开头时请求 v5 接口（如 "/v5/place/detail"）。"""
+    mode = cache_mode()
+    if mode:
+        key = _cache_key(path, params)
+        if mode == "replay":
+            cached = _cache_get(key)
+            return cached if cached is not None else {"error": f"回放缓存未命中（AMAP_CACHE=replay 不联网）：{key}"}
+        data = _request(path, params, retries)
+        if "error" not in data:
+            _cache_put(key, data)
+        return data
+    return _request(path, params, retries)
+
+
+def _request(path: str, params: dict, retries: int) -> dict:
     key = os.getenv("AMAP_API_KEY")
     if not key:
         return {"error": "AMAP_API_KEY 未配置：请在 .env 中填写高德 Web 服务 Key"}

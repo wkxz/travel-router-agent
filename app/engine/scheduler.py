@@ -106,6 +106,7 @@ EVENING_OPEN_FROM = 17 * 60
 # 看日落的景点：游览时段尽量盖住 [日落 − SUNSET_BEFORE_MIN, 日落 + SUNSET_AFTER_MIN]
 SUNSET_BEFORE_MIN = 60
 SUNSET_AFTER_MIN = 30
+AFTER_SUNSET = "空档加游的户外景点会游到天黑"
 GAP_RETURN_MIN = 150          # 白天行程结束后离晚餐还有 2.5 小时以上、且离住处较远时，先回住处休整
 
 # 同行有老人、小孩或行动不便（mobility="limited"）：道路 1km 以上就打车（平时 2km），节奏最多到均衡档
@@ -778,7 +779,11 @@ class _DayBuilder:
                 if self.s.travel.leg(self.loc, cand).roundabout:
                     self.gap_rejected.add(cand.name)  # 直线近、实际要绕远（隔水等），空档不专程去
                     continue
-                if self.add_spot(cand, latest_end=until, filler=True):
+                reason = self.add_spot(cand, latest_end=until, filler=True)
+                if reason == AFTER_SUNSET:
+                    self.gap_rejected.add(cand.name)  # 按真实车程会游到天黑：换下一个候选（室内的还能补）
+                    continue
+                if reason:
                     break
                 self.gap_pool.remove(cand)
                 self.unassigned.pop(cand.name, None)
@@ -845,6 +850,8 @@ class _DayBuilder:
             return "夜间时段放不下（会晚于 22:30 结束）"
         if not self.s._departure_ok(end, s, self.is_last_day):
             return "返程日时间不足，来不及赶车"
+        if filler and not s.is_indoor and end > sunset_minutes(s.lat, s.lng, self.date):
+            return AFTER_SUNSET  # 候选按估算车程筛过日落，这里按真实到达时刻再核对一次
         is_closed, closed_msg = is_spot_closed_on_date(s, self.date)
         if is_closed:
             return closed_msg

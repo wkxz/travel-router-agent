@@ -91,6 +91,20 @@ npm run build
 未安排景点与未满足必吃、回复里在工具数据中找不到的店名（疑似编造）。
 **改了排程引擎或提示词后，用它与上一轮对比再合并。**
 
+### 高德录制回放（不耗额度、结果可复现）
+
+`AMAP_CACHE=record` 时照常请求高德，并把成功的返回按「接口 + 参数」存进 `data/amap-cache.db`
+（`AMAP_CACHE_PATH` 可改，键里不含 Key，出错的返回不存）；`AMAP_CACHE=replay` 时只读这份缓存、不联网，
+未命中直接报错。默认关闭，线上不要开：录下来的驾车时间是录制那一刻的路况，营业时间、店铺也会变。
+
+```bash
+AMAP_CACHE=record ./.venv/Scripts/python.exe eval/run_eval.py eval/results/round8   # 跑测评时顺便录下高德返回
+AMAP_CACHE=replay ./.venv/Scripts/python.exe eval/replay.py eval/results/round8/01_beijing_departure.json
+```
+
+`eval/replay.py` 按结果文件里记录的工具调用（参数原样）依次重放、重新排程，不调用模型：
+改了排程引擎后，用同一份输入对比前后的行程。没录过的轮次（第 7 轮及以前）不设 `AMAP_CACHE` 时会实时请求高德。
+
 ### 行程合理性：规则检查、压力测试与模型点评
 
 上面的指标只管「走不走得通」。2026-10-30 用户实测指出的折返、天黑进户外景区、一天两顿素食，一条也没查出来，

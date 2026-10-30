@@ -20,6 +20,7 @@ from app.engine import LocationPoint, Spot, Restaurant, TripScheduler
 from app.engine.calendar_pack import is_sub_spot
 from app.engine.geo import sunset_minutes, parse_time_to_minutes
 from app.engine.scheduler import cuisine_key
+from app.engine.travel import Leg, TravelTimes
 
 HOTEL = LocationPoint(name="南京住宿点（按景点中心估算）", lng=118.80999055555556, lat=32.04534822222222)
 ZS_OPEN = "06:30-18:30（2月1日-11月30日），7:00-17:30（12月1日-1月31日）(数据来源:江苏省文旅厅公共服务平台苏心游)"
@@ -137,6 +138,23 @@ class TestNoOutdoorFillerAfterSunset(unittest.TestCase):
             if name == "明孝陵景区":
                 end = parse_time_to_minutes(slot.split("-")[1].strip())
                 self.assertLessEqual(end, sunset_minutes(HOTEL.lat, HOTEL.lng, date(2026, 11, 25)), rows)
+
+    def test_real_leg_rechecked_against_sunset(self):
+        """筛选空档景点用估算车程，真实车程更长时也不能游到天黑：add_spot 按真实到达时刻再核对日落。
+        第 4~7 轮测评实测打车中位耗时是估算的 1.57 倍；这里用 3 倍放大，旧版排成 16:36-17:36（日落 17:02）。"""
+        class Slow(TravelTimes):
+            def leg(self, a, b, mode="auto"):
+                e = self.estimate(a, b, mode)
+                return Leg(e.minutes * 3, f"约 {e.minutes * 3} 分钟", e.road_km, False)
+
+        h = LocationPoint(name="住处", lng=118.80, lat=32.05)
+        main = Spot(name="大景区", lng=118.80, lat=32.051, duration_minutes=225, open_time="08:00-18:00")
+        park = Spot(name="某公园", lng=118.81, lat=32.05, duration_minutes=60, open_time="06:00-22:00")
+        plan = TripScheduler("南京", 1, h, start_date="2026-11-25", travel=Slow()).schedule([main], [], backup_spots=[park])
+        sunset = sunset_minutes(h.lat, h.lng, date(2026, 11, 25))
+        for _, slot, name in _rows(plan):
+            if name == "某公园":
+                self.assertLessEqual(parse_time_to_minutes(slot.split("-")[1].strip()), sunset, _rows(plan))
 
     def test_indoor_filler_still_allowed(self):
         hall = Spot(name="某纪念馆", lng=118.828, lat=32.041, duration_minutes=60, open_time="09:00-20:00",
