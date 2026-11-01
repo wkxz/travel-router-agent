@@ -98,6 +98,25 @@ class TestHoursOnDate(unittest.TestCase):
         self.assertIn("17:00", hours_on_date(text, date(2026, 5, 7)))
         self.assertEqual(hours_on_date(text, date(2026, 5, 4)), CLOSED_MARK)  # 周一
 
+    def test_month_only_seasons(self):
+        """只写月份的季节段。round8 南京明孝陵高德原文：旧版认不出「2月至11月」「1月,12月」，
+        11 月仍按两段时刻拼在一起的文本判断（首段 07:00-17:30）。"""
+        text = ("1月,12月 周一至周日 07:00-17:30；2月至11月 周一至周日 06:30-18:30；"
+                "明孝陵博物馆:周二–周日09:00–17:00（16:30停止入馆），周一闭馆")
+        nov, dec, jan = date(2026, 11, 3), date(2026, 12, 8), date(2027, 1, 12)  # 都是周二
+        self.assertEqual(first_open_minute(hours_on_date(text, nov)), 6 * 60 + 30)
+        self.assertIn("18:30", hours_on_date(text, nov))
+        self.assertNotIn("17:30", hours_on_date(text, nov))
+        for d in (dec, jan):
+            self.assertEqual(first_open_minute(hours_on_date(text, d)), 7 * 60)
+            self.assertNotIn("18:30", hours_on_date(text, d))
+        # 「4-10月」：不能把「4-10」当成 4 月 10 日
+        text = "4-10月 08:00-18:00；11-3月 08:30-17:00"
+        self.assertEqual(hours_on_date(text, date(2026, 7, 1)).strip("；"), "08:00-18:00")
+        self.assertEqual(hours_on_date(text, date(2027, 2, 1)), "08:30-17:00")
+        # 带日期的写法不受影响
+        self.assertEqual(hours_on_date("10月8日至3月31日 周一至周日 08:00-17:30", date(2026, 11, 7)), "08:00-17:30")
+
     def test_closed_mark_is_not_open(self):
         self.assertIs(find_open_slot(10 * 60, 60, CLOSED_MARK)[0], False)
 

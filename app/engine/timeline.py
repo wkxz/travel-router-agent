@@ -5,6 +5,7 @@
 所有时刻都是「当日 00:00 起的分钟数」。
 """
 
+from contextvars import ContextVar
 from datetime import date
 from typing import Callable, List, Optional, Tuple
 
@@ -24,6 +25,17 @@ DINNER_DURATION = 80
 SPOT_LATEST_END = 18 * 60 + 30  # 白天景点最晚结束时间，之后留给晚餐
 EVENING_LATEST_END = 22 * 60 + 30  # 夜游景点最晚结束时间
 EARLIEST_DEPART = 7 * 60      # 「宜早去」景点最早 07:00 出发
+# 轻松节奏或同行有老人时最早 08:30（round8 杭州带爸妈的轻松行程，灵隐寺宜早去，07:00 就出门）
+EARLIEST_DEPART_GENTLE = 8 * 60 + 30
+# 本次排程的最早出发时刻：TripScheduler.schedule 按节奏和同行人设置，排时间轴与分天模拟都从这里取。
+# 分天要经过五六层函数才调到 simulate_day，逐层传参太散；ContextVar 按线程 / 协程隔离，并发排程互不影响
+_earliest_depart: ContextVar[int] = ContextVar("earliest_depart", default=EARLIEST_DEPART)
+
+
+def earliest_depart() -> int:
+    return _earliest_depart.get()
+
+
 MORNING_ARRIVE_DEFAULT = 8 * 60  # 「宜早去」但营业时间未知时，按 08:00 到达
 OPEN_MAX_WAIT = 90            # 到早了最多等开门 90 分钟（与排程器 find_open_slot 默认值一致）
 NIGHT_MAX_WAIT = 30
@@ -54,7 +66,7 @@ def simulate_day(hotel: LocationPoint, daytime: List[Spot], night: List[Spot], l
     if daytime and daytime[0].best_period == "morning":  # 与排程器 start_early_for 一致：宜早去的按开门时间到
         opening = first_open_minute(hours_on_date(daytime[0].open_time, day))
         arrive = opening if opening is not None else MORNING_ARRIVE_DEFAULT
-        t = min(DAY_START, max(EARLIEST_DEPART, arrive - leg(hotel, daytime[0])))
+        t = min(DAY_START, max(earliest_depart(), arrive - leg(hotel, daytime[0])))
     lunch_done = False
     for s in daytime:
         travel = leg(cur, s)

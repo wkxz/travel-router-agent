@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 from dotenv import load_dotenv; load_dotenv(".env")
-from agents import Runner, SQLiteSession
+from agents import ModelSettings, RunConfig, Runner, SQLiteSession
 from openai.types.responses import ResponseTextDeltaEvent
 import app.agent as chat
 from app._data.poi_repo import TripContext
@@ -38,14 +38,56 @@ CASES = [
 ]
 
 
+# 每次模型调用的计时（相对本轮开始的秒数），用来拆分「等首个字节」与「吐参数」各占多久：
+#   t_req 发出请求（上一次调用结束或最后一个工具返回）  t_first 收到首个数据块
+#   t_reason / t_call / t_text 首次出现思考内容 / 工具调用 / 正文   t_done 结束；usage 为 token 数（网关不返回时为空）
+# 非 OpenAI 官方端点时 SDK 默认不请求 usage，这里只在测评中打开 include_usage，线上不变
+EVAL_RUN_CONFIG = RunConfig(model_settings=ModelSettings(include_usage=True))
+
+
+def _usage(response) -> dict:
+    u = getattr(response, "usage", None)
+    if not u:
+        return {}
+    details = getattr(u, "output_tokens_details", None)
+    return {"input": u.input_tokens, "output": u.output_tokens,
+            "reasoning": getattr(details, "reasoning_tokens", 0) or 0}
+
+
+def _track_llm(llm: list, data, now: float, mark: float) -> None:
+    """按原始流事件更新 llm 列表里当前这次模型调用的计时。"""
+    kind = getattr(data, "type", "")
+    if kind == "response.created":
+        llm.append({"t_req": round(mark, 1), "t_first": round(now, 1)})
+    elif not llm:
+        return
+    cur = llm[-1]
+    if kind.startswith("response.reasoning"):
+        cur.setdefault("t_reason", round(now, 1))
+    elif kind == "response.output_item.added" and getattr(data.item, "type", "") == "function_call":
+        cur.setdefault("t_call", round(now, 1))
+    elif kind == "response.output_text.delta":
+        cur.setdefault("t_text", round(now, 1))
+    elif kind == "response.completed":
+        cur["t_done"] = round(now, 1)
+        cur["usage"] = _usage(data.response)
+
+
 async def run_turn(message, session, cid):
-    rec = {"message": message, "tools": [], "plans": [], "text": "", "error": None}
+    rec = {"message": message, "tools": [], "plans": [], "text": "", "error": None, "llm": []}
     t0 = time.time()
+    mark = 0.0  # 下一次模型请求大约在这之后发出：上一次调用结束、或最后一个工具返回
     ctx = chat.context_for(cid)  # 与线上一致：同一会话共享 POI 缓存
-    result = Runner.run_streamed(chat.agent, input=message, session=session, context=ctx, max_turns=chat.MAX_TURNS)
+    result = Runner.run_streamed(chat.agent, input=message, session=session, context=ctx, max_turns=chat.MAX_TURNS,
+                                 run_config=EVAL_RUN_CONFIG)
     pending = {}
     try:
         async for ev in result.stream_events():
+            now = time.time() - t0
+            if ev.type == "raw_response_event":
+                _track_llm(rec["llm"], ev.data, now, mark)
+                if getattr(ev.data, "type", "") == "response.completed":
+                    mark = now
             if ev.type == "raw_response_event" and isinstance(ev.data, ResponseTextDeltaEvent):
                 rec["text"] += ev.data.delta
             elif ev.type == "run_item_stream_event" and ev.name == "tool_called":
@@ -55,6 +97,7 @@ async def run_turn(message, session, cid):
                 pending[getattr(raw, "call_id", None)] = call
                 rec["tools"].append(call)
             elif ev.type == "run_item_stream_event" and ev.name == "tool_output":
+                mark = now
                 raw = getattr(ev.item, "raw_item", None)
                 cid = raw.get("call_id") if isinstance(raw, dict) else getattr(raw, "call_id", None)
                 out = getattr(ev.item, "output", None)
@@ -82,5 +125,6 @@ async def main(out_dir, ids):
                   f"err={recs[-1]['error']}", flush=True)
         json.dump({"id": cid, "turns": recs}, open(f"{out_dir}/{cid}.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
-os.makedirs(sys.argv[1], exist_ok=True)
-asyncio.run(main(sys.argv[1], sys.argv[2:]))
+if __name__ == "__main__":
+    os.makedirs(sys.argv[1], exist_ok=True)
+    asyncio.run(main(sys.argv[1], sys.argv[2:]))

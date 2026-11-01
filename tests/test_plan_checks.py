@@ -84,6 +84,22 @@ class TestPlanChecks(unittest.TestCase):
         )
         self.assertEqual(check_plan(plan), [])
 
+    def test_no_reentry_when_hotel_in_area(self):
+        """round8 西安第 2 天，住处就在钟楼：钟楼 → 大慈恩寺 → 北院门 怎么排都要出片区一趟、再回来，不算折返。
+        （先去大慈恩寺：住处 → 大慈恩寺 → 钟楼 → 北院门，同样穿城往返一次，估算车程反而多 4 分钟）"""
+        def it(category, name, lng, lat, slot=""):
+            return {"time_slot": slot, "category": category, "title": name,
+                    "location": {"name": name, "lng": lng, "lat": lat, "poi_id": None}}
+        items = [it("hotel", "钟楼", 108.94774, 34.259968, "09:00"),
+                 it("spot", "西安钟楼", 108.94703, 34.25943, "09:03 - 10:03"),
+                 it("spot", "大慈恩寺", 108.96418, 34.217954, "15:28 - 16:58"),
+                 it("spot", "北院门", 108.943744, 34.264169, "19:51 - 21:21")]
+        reentry = lambda: [i for i in check_plan(_plan(("2026-07-08", items))) if i["type"] == "reentry"]
+        self.assertEqual(reentry(), [])
+        # 住处不在这片区时照常报
+        items[0] = it("hotel", "远处住处", 108.90, 34.30, "09:00")
+        self.assertEqual(len(reentry()), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

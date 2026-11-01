@@ -34,6 +34,28 @@ _DATE = r"(?<![\d:])(?:(?:(\d{4})-)?(\d{1,2})-(\d{1,2})(?![\d:])|(\d{1,2})月(\d
 _DATE_RANGE_RE = re.compile(_DATE + r"\s*(?:至|到|~|—|-|–)\s*(?:次年)?" + _DATE)
 # 几个日期段共用后面一段时刻：「1月1日-3月31日与11月1日-12月31日 周二至周日 08:30-16:30」
 _RANGE_JOIN_RE = re.compile(r"\s*(?:与|和|及|、|,|，)\s*")
+# 只写月份的季节段改写成日期段再解析：「2月至11月」→「2月1日至11月30日」，「1月,12月」→ 两个整月，
+# 「4-10月」也要先改写，否则「4-10」会被 _DATE 当成 4 月 10 日。round8 南京明孝陵：
+# 「1月,12月 周一至周日 07:00-17:30；2月至11月 周一至周日 06:30-18:30」旧版 11 月按首段 17:30 关门判断
+_MONTH_RANGE_RE = re.compile(r"(?<![\d-])(\d{1,2})月?\s*(?:至|到|~|—|-|–)\s*(?:次年)?(\d{1,2})月(?!\s*\d{1,2}\s*日)")
+_MONTH_RE = re.compile(r"(?<![\d-])(\d{1,2})月(?!\s*\d{1,2}\s*日)")
+_MONTH_END = {2: 29, 4: 30, 6: 30, 9: 30, 11: 30}
+
+
+def _month_span(a: str, b: str) -> str:
+    a, b = int(a), int(b)
+    if not (1 <= a <= 12 and 1 <= b <= 12):
+        return ""
+    return f"{a}月1日至{b}月{_MONTH_END.get(b, 31)}日"
+
+
+def _months_to_dates(text: str) -> str:
+    if "月" not in text:
+        return text
+    text = _MONTH_RANGE_RE.sub(lambda m: _month_span(m[1], m[2]) or m[0], text)
+    return _MONTH_RE.sub(lambda m: _month_span(m[1], m[1]) or m[0], text)
+
+
 _OPEN_BRACKETS = "(（"
 _CLOSE_BRACKETS = ")）"
 _TIME_RANGE_RE = re.compile(r"\d{1,2}:\d{2}\s*[-–~]\s*(?:次日)?\d{1,2}:\d{2}")  # 「07:00-次日00:30」
@@ -130,6 +152,7 @@ def hours_on_date(open_time: str, day: Optional[date]) -> str:
     text = (open_time or "").strip()
     if not text or day is None:
         return text
+    text = _months_to_dates(text)
     ranges = list(_DATE_RANGE_RE.finditer(text))
     if ranges:
         for i, m in enumerate(ranges):

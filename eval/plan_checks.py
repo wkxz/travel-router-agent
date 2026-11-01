@@ -2,7 +2,8 @@
 
 压力测试（eval/stress.py）只查走不走得通，2026-10-30 用户实测指出的问题一个也没查出来，这里把它们写成确定性规则：
 
-- reentry：同一天先去 A、中间去了远处的 B、再回到 A 旁边的 C（老门东 → 总统府 → 夫子庙；中山陵 → 南博 → 明孝陵）
+- reentry：同一天先去 A、中间去了远处的 B、再回到 A 旁边的 C（老门东 → 总统府 → 夫子庙；中山陵 → 南博 → 明孝陵）。
+  当天从 A / C 所在片区出发时不算：远处的 B 怎么排都要往返一趟
 - outdoor_after_sunset：白天的户外景点在日落后半小时还没游完（11 月底 16:38 进明孝陵，17:05 天黑）
 - repeat_cuisine_day：同一天午餐、晚餐是同一类菜（百味斋素菜馆 + 鸡鸣寺素面馆）
 - meal_too_close：两顿吃的（正餐 / 小吃）间隔太短（午饭 14:25 吃完、14:35 又排小吃）。由 eval/review.py 的模型点评发现，
@@ -49,10 +50,14 @@ def _same_area(a: dict, b: dict) -> bool:
 
 def _reentry(day: dict) -> List[dict]:
     spots = [it["location"] for it in day["items"] if it["category"] == "spot" and it.get("location")]
+    start = next((it["location"] for it in day["items"][:1] if it["category"] == "hotel" and it.get("location")), None)
     issues = []
     for i in range(len(spots)):
         for k in range(i + 2, len(spots)):
             if not _same_area(spots[i], spots[k]):
+                continue
+            # 住处就在这片区：远处那个点怎么排都要出去一趟再回来（round8 西安住钟楼，钟楼 → 大慈恩寺 → 北院门），不算折返
+            if start and (_same_area(start, spots[i]) or _same_area(start, spots[k])):
                 continue
             away = [spots[j] for j in range(i + 1, k)
                     if _km(spots[j], spots[i]) > REENTRY_AWAY_KM and _km(spots[j], spots[k]) > REENTRY_AWAY_KM]

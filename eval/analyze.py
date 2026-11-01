@@ -86,6 +86,13 @@ def main(d):
                       f"dep={a.get('departure_id')!r}@{a.get('departure_time')!r} must_eat={a.get('must_eat')!r} "
                       f"n_spots={len(json.loads(a.get('spots') or '[]'))} n_foods={len(json.loads(a.get('foods') or '[]'))} "
                       f"backups={len(json.loads(a.get('backup_spots') or '[]'))} avoid={a.get('avoid')!r} max_cost={a.get('max_cost_per_meal')!r} gaps={len(ok.get('gaps') or [])} success={ok.get('success')} {ok.get('error', '')[:120]}")
+            for g in gens:
+                # 发出 generate_trip_itinerary 的那次模型调用：等首个数据块 / 等到开始写工具调用 / 写参数各用了多久
+                call = next((c for c in t.get("llm") or [] if c.get("t_done") is not None and abs(c["t_done"] - g["t"]) <= 0.5), None)
+                if call:
+                    first, start, done = call["t_first"], call.get("t_call", call["t_first"]), call["t_done"]
+                    print(f"   gen timing: wait={first - call['t_req']:.1f}s pre_call={start - first:.1f}s "
+                          f"args={done - start:.1f}s usage={call.get('usage') or '-'}")
             failed_search = [(c["tool"], json.loads(c["args"]).get("keywords"), (c.get("output") or "")[:80])
                              for c in t["tools"] if c["tool"].startswith("search") and ('"count": 0' in (c.get("output") or "") or '"error"' in (c.get("output") or ""))]
             if failed_search:

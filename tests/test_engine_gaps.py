@@ -53,9 +53,10 @@ class TestGapFilling(unittest.TestCase):
         self.assertIn("空档", free[0].title)
         self.assertTrue(free[0].description)
 
-    def test_relaxed_pace_does_not_fill(self):
+    def test_relaxed_pace_does_not_fill_beyond_budget(self):
+        # 轻松节奏补空档不超过每天 330 分钟游玩预算：270 + 90 超出（预算内的补点见 test_relaxed_gap_fill）
         plan = TripScheduler("成都", 1, CHUNXI, pace="relaxed").schedule(
-            [Spot(**PANDA, best_period="morning", duration_minutes=240)], [NEAR_PANDA_MEAL],
+            [Spot(**PANDA, best_period="morning", duration_minutes=270)], [NEAR_PANDA_MEAL],
             backup_spots=[Spot(**NEAR_PANDA_PARK)],
         )
         self.assertFalse(any("北湖公园" in it.title for it in _items(plan, "spot")))
